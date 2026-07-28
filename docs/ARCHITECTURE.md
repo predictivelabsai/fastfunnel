@@ -4,7 +4,7 @@
 
 FastFunnel currently provides a runnable local cockpit with:
 
-- a Factorio organization/company workspace and approving administrator;
+- a Predictive Labs organization/company workspace and approving demo administrator;
 - multi-user memberships and persisted email invitations;
 - the complete pinned Marketing Skills catalog;
 - a registry-driven integration catalog with honest implementation states;

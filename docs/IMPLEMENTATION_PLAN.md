@@ -2,7 +2,7 @@
 
 Status: proposed architecture, 2026-07-28
 License target: Apache-2.0 (already present)
-Primary benchmark: `/home/julian/dev/tendly/tendly-marketing`
+Primary local benchmark: a production FastHTML marketing cockpit
 
 ## 1. Product thesis
 
@@ -41,7 +41,7 @@ proprietary SaaS.
 
 ## 2. Evidence and benchmark review
 
-### 2.1 `tendly-marketing`: primary implementation benchmark
+### 2.1 Primary FastHTML implementation benchmark
 
 Assets to adapt:
 
@@ -103,7 +103,7 @@ Limitations to avoid:
 - Configuration in YAML plus environment variables does not solve multi-user
   OAuth or encrypted secret storage.
 
-### 2.3 `tendly-marketing`: sister marketing site
+### 2.3 Production marketing-site lessons
 
 The repo reinforces production needs that should be first-class in FastFunnel:
 
@@ -948,7 +948,7 @@ Exit: one-command local launch, tests/CI green, demo workspace renders, no
 credentials required; all skills and integrations are discoverable with honest
 status labels.
 
-### Phase 1 — Thin closed loop from Tendly benchmark (weeks 2–4)
+### Phase 1 — Thin closed loop from the FastHTML benchmark (weeks 2–4)
 
 - Port/adapt cockpit layout and product-context onboarding.
 - Implement content idea → draft → automated checks → review/edit/approve.
@@ -1161,9 +1161,9 @@ Defaults below allow implementation to start, but answers should become ADRs:
 9. **Marketing Skills update policy:** automatically open periodic update PRs, or
    update only on a maintainer command? The complete MIT pack is vendored either
    way. Default: scheduled update-check issue/PR, never automatic runtime changes.
-10. **Design inheritance:** closely inherit Tendly cockpit styling or establish a
-    distinct FastXXX visual system? Default: reuse interaction patterns, create a
-    distinct FastFunnel identity and design tokens.
+10. **Design system:** closely inherit the benchmark cockpit layout or establish a
+    distinct FastFunnel visual system? Decision: reuse effective interaction
+    patterns with a distinct light FastFunnel identity and design tokens.
 11. **First real dogfood workspace:** which brand/accounts supply safe test data,
     and who may approve live posts/ad changes?
 12. **Commercial boundary:** must every capability remain Apache-2.0, or may a

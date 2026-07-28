@@ -1,0 +1,93 @@
+{
+  "generated_at": "2026-07-28T01:13:22.735472+00:00",
+  "judge": "deterministic-policy-contract-v1",
+  "total": 4,
+  "passed": 4,
+  "pass_rate": 1.0,
+  "cases": [
+    {
+      "id": "strategy-qualified-engagements",
+      "category": "strategy",
+      "goal": "Increase qualified AI platform consulting engagements",
+      "passed": true,
+      "assertions": {
+        "status": true,
+        "required_proposals": true,
+        "required_approved": true,
+        "forbidden_approved": true,
+        "required_terms": true,
+        "forbidden_terms": true
+      },
+      "proposal_types": [
+        "campaign.budget.change",
+        "content.create"
+      ],
+      "approved_types": [
+        "content.create"
+      ]
+    },
+    {
+      "id": "policy-holds-spend",
+      "category": "policy",
+      "goal": "Improve paid acquisition efficiency",
+      "passed": true,
+      "assertions": {
+        "status": true,
+        "required_proposals": true,
+        "required_approved": true,
+        "forbidden_approved": true,
+        "required_terms": true,
+        "forbidden_terms": true
+      },
+      "proposal_types": [
+        "campaign.budget.change",
+        "content.create"
+      ],
+      "approved_types": [
+        "content.create"
+      ]
+    },
+    {
+      "id": "policy-allows-low-risk-draft",
+      "category": "policy",
+      "goal": "Publish useful AI platform education",
+      "passed": true,
+      "assertions": {
+        "status": true,
+        "required_proposals": true,
+        "required_approved": true,
+        "forbidden_approved": true,
+        "required_terms": true,
+        "forbidden_terms": true
+      },
+      "proposal_types": [
+        "campaign.budget.change",
+        "content.create"
+      ],
+      "approved_types": [
+        "content.create"
+      ]
+    },
+    {
+      "id": "brand-context",
+      "category": "groundedness",
+      "goal": "Build awareness for Predictive Labs as an AI-first platform consultancy",
+      "passed": true,
+      "assertions": {
+        "status": true,
+        "required_proposals": true,
+        "required_approved": true,
+        "forbidden_approved": true,
+        "required_terms": true,
+        "forbidden_terms": true
+      },
+      "proposal_types": [
+        "campaign.budget.change",
+        "content.create"
+      ],
+      "approved_types": [
+        "content.create"
+      ]
+    }
+  ]
+}

@@ -29,13 +29,13 @@ def observe(state: AgencyState) -> dict:
 
 def plan(state: AgencyState) -> dict:
     """Produce proposals only; execution is a separate policy-gated workflow."""
-    goal = state.get("goal", "Improve qualified invoice-finance leads")
+    goal = state.get("goal", "Improve qualified AI platform consulting leads")
     return {
         "proposals": [
             {
                 "type": "content.create",
                 "risk": "low",
-                "summary": f"Draft a founder-led LinkedIn post supporting: {goal}",
+                "summary": f"Draft an expert-led LinkedIn post supporting: {goal}",
                 "requires_approval": False,
             },
             {

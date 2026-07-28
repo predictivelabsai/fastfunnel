@@ -30,7 +30,7 @@ class PostmarkInvitations:
 
         payload = json.dumps(
             {
-                "From": "FastFunnel <invites@factorio.co.uk>",
+                "From": "FastFunnel <invites@fastfunnel.app>",
                 "To": recipient,
                 "Subject": f"Join {company_name} in FastFunnel",
                 "TextBody": (

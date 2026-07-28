@@ -4,14 +4,15 @@ FastFunnel is an Apache-2.0, FastHTML-based autonomous marketing cockpit. It is
 designed to create, review, distribute, measure, and improve marketing work
 while keeping publishing and spend inside explicit company guardrails.
 
-The initial dogfood workspace is [Factorio](https://factorio.co.uk), a UK invoice
-financing brand. `kaljuvee@gmail.com` is seeded as the approving administrator.
+The initial dogfood workspace is [Predictive Labs](https://predictivelabs.ai),
+an AI-first platform consultancy. `admin@fastfunnel.app` is seeded as the
+approving demo administrator.
 
 ![FastFunnel walkthrough](docs/demo/fastfunnel-walkthrough.gif)
 
 ## What works now
 
-- Light, Tendly-inspired three-pane FastHTML cockpit.
+- Light three-pane FastHTML cockpit with a distinct FastFunnel identity.
 - Organization/company/user/membership/invitation persistence.
 - Content draft → admin review → bounded autonomous scheduling.
 - LangGraph observe → plan → policy-gate workflow.

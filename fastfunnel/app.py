@@ -32,17 +32,17 @@ def metric(label: str, value: str, note: str):
     return Div(Small(label), Strong(value), Span(note, cls="delta"), cls="card metric")
 
 
-@rt("/")
+@rt("/", methods=["GET"])
 def dashboard_view():
     data = store.dashboard()
     counts = data["counts"]
     return shell(
-        "Good morning, Factorio",
+        "Good morning, Predictive Labs",
         Section(
             Div(
                 H2("Your autonomous agency is ready to build demand."),
                 P(
-                    "Create, approve and distribute useful invoice-finance content—"
+                    "Create, approve and distribute useful AI-platform content—"
                     "then learn from every result."
                 ),
             ),
@@ -62,14 +62,14 @@ def dashboard_view():
                 Div(
                     Div(
                         Small("01 · EDUCATE"),
-                        H3("Explain invoice finance clearly"),
-                        P("Build trust with UK SME owners using practical, jargon-free guidance."),
+                        H3("Explain AI platforms clearly"),
+                        P("Build trust with practical, auditable and outcome-focused guidance."),
                         cls="card",
                     ),
                     Div(
                         Small("02 · CAPTURE"),
                         H3("Convert high-intent demand"),
-                        P("Pair educational content with paid-search and focused landing pages."),
+                        P("Pair thought leadership with targeted campaigns and focused landing pages."),
                         cls="card",
                     ),
                     cls="grid two",
@@ -90,15 +90,15 @@ def dashboard_view():
     )
 
 
-@rt("/plan")
+@rt("/plan", methods=["GET"])
 def plan_view():
     return shell(
         "Marketing plan",
         Div(
             Div(
                 Small("NORTH STAR"),
-                H2("Qualified invoice-finance applications"),
-                P("Help UK SMEs understand and access working capital faster."),
+                H2("Qualified AI platform engagements"),
+                P("Help organizations design and deliver auditable AI-first platforms."),
                 cls="card",
             ),
             Div(
@@ -115,8 +115,8 @@ def plan_view():
                 Div(Small(f"WORKSTREAM {i:02}"), H3(title), P(copy), cls="card")
                 for i, (title, copy) in enumerate(
                     [
-                        ("Invoice finance education", "Guides, explainers and founder-led posts."),
-                        ("High-intent acquisition", "Google Ads and conversion-focused landing pages."),
+                        ("AI platform education", "Guides, architecture explainers and expert-led posts."),
+                        ("High-intent acquisition", "Targeted campaigns and conversion-focused landing pages."),
                         ("Trust and proof", "Customer outcomes, transparent pricing and FAQs."),
                     ],
                     1,
@@ -128,13 +128,13 @@ def plan_view():
     )
 
 
-@rt("/agency")
+@rt("/agency", methods=["GET"])
 def agency_view():
     graph = build_agency_graph()
     result = graph.invoke(
         {
-            "company_id": "co_factorio",
-            "goal": "Increase qualified invoice-finance applications",
+            "company_id": "co_predictivelabs",
+            "goal": "Increase qualified AI platform consulting engagements",
             "messages": [],
         }
     )
@@ -173,7 +173,7 @@ def agency_view():
     )
 
 
-@rt("/content")
+@rt("/content", methods=["GET"])
 def content_view():
     items = store.list_content()
     return shell(
@@ -198,7 +198,7 @@ def content_view():
                         Textarea(
                             name="body",
                             required=True,
-                            placeholder="Explain invoice finance in clear, useful language…",
+                            placeholder="Explain AI-first platforms in clear, useful language…",
                         ),
                     ),
                     Button("Send to review", type="submit"),
@@ -230,13 +230,13 @@ def content_view():
     )
 
 
-@rt("/content")
+@rt("/content", methods=["POST"])
 def create_content(title: str, body: str, channel: str):
     store.create_content(title.strip(), body.strip(), channel)
     return RedirectResponse("/review", status_code=303)
 
 
-@rt("/review")
+@rt("/review", methods=["GET"])
 def review_view():
     items = [item for item in store.list_content() if item["status"] == "review"]
     rows = [
@@ -272,7 +272,7 @@ def review_view():
     )
 
 
-@rt("/review/{item_id}/approve")
+@rt("/review/{item_id}/approve", methods=["POST"])
 def approve_content(item_id: str):
     store.approve_content(item_id)
     scheduled = (datetime.now(UTC) + timedelta(days=1)).replace(microsecond=0).isoformat()
@@ -280,7 +280,7 @@ def approve_content(item_id: str):
     return RedirectResponse("/calendar", status_code=303)
 
 
-@rt("/calendar")
+@rt("/calendar", methods=["GET"])
 def calendar_view():
     items = [item for item in store.list_content() if item["status"] in {"scheduled", "published"}]
     return shell(
@@ -307,7 +307,7 @@ def calendar_view():
     )
 
 
-@rt("/campaigns")
+@rt("/campaigns", methods=["GET"])
 def campaigns_view():
     return shell(
         "Paid campaigns",
@@ -334,7 +334,7 @@ def campaigns_view():
     )
 
 
-@rt("/analytics")
+@rt("/analytics", methods=["GET"])
 def analytics_view():
     return shell(
         "Analytics",
@@ -358,7 +358,7 @@ def analytics_view():
     )
 
 
-@rt("/skills")
+@rt("/skills", methods=["GET"])
 def skills_view():
     skills = discover_skills()
     source = upstream()
@@ -392,7 +392,7 @@ def skills_view():
     )
 
 
-@rt("/skills/{skill_id}")
+@rt("/skills/{skill_id}", methods=["GET"])
 def skill_detail_view(skill_id: str):
     skill = next((item for item in discover_skills() if item.id == skill_id), None)
     if not skill:
@@ -413,7 +413,7 @@ def skill_detail_view(skill_id: str):
     )
 
 
-@rt("/integrations")
+@rt("/integrations", methods=["GET"])
 def integrations_view():
     counts = integration_group_counts()
     return shell(
@@ -455,7 +455,7 @@ def integrations_view():
     )
 
 
-@rt("/integrations/{integration_id}")
+@rt("/integrations/{integration_id}", methods=["GET"])
 def integration_detail_view(integration_id: str):
     item = get_integration(integration_id)
     if not item:
@@ -495,7 +495,7 @@ def integration_detail_view(integration_id: str):
     )
 
 
-@rt("/team")
+@rt("/team", methods=["GET"])
 def team_view():
     data = store.dashboard()
     return shell(
@@ -550,7 +550,7 @@ def team_view():
     )
 
 
-@rt("/team/invite")
+@rt("/team/invite", methods=["POST"])
 def invite_team_member(email: str, role: str):
     _, token = store.invite(email, role)
     PostmarkInvitations().send(

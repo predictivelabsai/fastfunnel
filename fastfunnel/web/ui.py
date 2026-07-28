@@ -62,12 +62,12 @@ def sidebar(active: str = "/") -> Aside:
     )
 
 
-def topbar(title: str, eyebrow: str = "FACTORIO · INVOICE FINANCING") -> Header:
+def topbar(title: str, eyebrow: str = "PREDICTIVE LABS · AI-FIRST CONSULTANCY") -> Header:
     return Header(
         Div(Small(eyebrow, cls="eyebrow"), H1(title)),
         Div(
             Span("Bounded autonomy", cls="pill success"),
-            Span("kaljuvee@gmail.com", cls="user-pill"),
+            Span("admin@fastfunnel.app", cls="user-pill"),
             cls="top-actions",
         ),
         cls="topbar",
@@ -90,9 +90,9 @@ def assistant_rail():
     return Aside(
         Div(Span("✦", cls="spark"), Div(Strong("Agency copilot"), Small("LangGraph swarm")), cls="rail-head"),
         Div(
-            P("I can draft, review, distribute and measure—within Factorio's approval policy."),
+            P("I can draft, review, distribute and measure—within Predictive Labs' approval policy."),
             Div(Strong("Current guardrail"), P("Publishing is bounded. Spend changes require admin approval."), cls="rail-card"),
-            Div(Strong("Suggested"), P("Create a LinkedIn post explaining invoice finance without jargon."), cls="rail-card accent"),
+            Div(Strong("Suggested"), P("Create a LinkedIn post about building auditable AI platforms."), cls="rail-card accent"),
             cls="rail-body",
         ),
         Form(

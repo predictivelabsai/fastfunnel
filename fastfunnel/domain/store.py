@@ -89,17 +89,18 @@ class Store:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
             if conn.execute("SELECT 1 FROM organizations LIMIT 1").fetchone():
+                self._refresh_demo_identity(conn)
                 return
             created = now_iso()
-            org_id, company_id, user_id = "org_factorio", "co_factorio", "usr_admin"
+            org_id, company_id, user_id = "org_predictivelabs", "co_predictivelabs", "usr_admin"
             conn.execute(
                 "INSERT INTO organizations VALUES (?, ?, ?, ?)",
-                (org_id, "Factorio Finance", "factorio", created),
+                (org_id, "Predictive Labs", "predictive-labs", created),
             )
             profile = {
                 "website": f"https://{settings.seed_domain}",
-                "industry": "Invoice financing",
-                "market": "United Kingdom",
+                "industry": "AI-first platform consultancy",
+                "market": "Global",
                 "approval_policy": "bounded_autonomy_admin_approval",
             }
             conn.execute(
@@ -117,7 +118,7 @@ class Store:
             )
             conn.execute(
                 "INSERT INTO users VALUES (?, ?, ?, ?)",
-                (user_id, settings.admin_email, "Factorio Admin", created),
+                (user_id, settings.admin_email, "Demo Admin", created),
             )
             conn.execute(
                 "INSERT INTO memberships VALUES (?, ?, ?)", (org_id, user_id, "admin")
@@ -125,6 +126,33 @@ class Store:
             self._audit(
                 conn, org_id, company_id, user_id, "workspace.seeded", "company", company_id, profile
             )
+
+    @staticmethod
+    def _refresh_demo_identity(conn: sqlite3.Connection) -> None:
+        """Keep existing local demo databases aligned with the public demo identity."""
+        organization = conn.execute("SELECT id FROM organizations LIMIT 1").fetchone()
+        company = conn.execute("SELECT id FROM companies LIMIT 1").fetchone()
+        admin = conn.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
+        if not organization or not company or not admin:
+            return
+        profile = {
+            "website": f"https://{settings.seed_domain}",
+            "industry": "AI-first platform consultancy",
+            "market": "Global",
+            "approval_policy": "bounded_autonomy_admin_approval",
+        }
+        conn.execute(
+            "UPDATE organizations SET name=?, slug=? WHERE id=?",
+            (settings.seed_company, "predictive-labs", organization["id"]),
+        )
+        conn.execute(
+            "UPDATE companies SET name=?, domain=?, profile_json=? WHERE id=?",
+            (settings.seed_company, settings.seed_domain, json.dumps(profile), company["id"]),
+        )
+        conn.execute(
+            "UPDATE users SET email=?, display_name=? WHERE id=?",
+            (settings.admin_email, "Demo Admin", admin["id"]),
+        )
 
     def dashboard(self) -> dict:
         with self.connect() as conn:
