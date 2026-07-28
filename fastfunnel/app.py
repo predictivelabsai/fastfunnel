@@ -28,6 +28,11 @@ app, rt = fast_app(
 store.initialize()
 
 
+@rt("/healthz", methods=["GET"])
+def health_check():
+    return {"status": "ok"}
+
+
 def metric(label: str, value: str, note: str):
     return Div(Small(label), Strong(value), Span(note, cls="delta"), cls="card metric")
 
