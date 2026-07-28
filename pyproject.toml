@@ -1,0 +1,39 @@
+[project]
+name = "fastfunnel"
+version = "0.1.0"
+description = "Open-source autonomous marketing cockpit built with FastHTML"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "Apache-2.0"}
+dependencies = [
+  "python-fasthtml>=0.12.30",
+  "langgraph>=0.6.0",
+  "pydantic>=2.10",
+  "python-dotenv>=1.0",
+  "uvicorn>=0.34",
+]
+
+[project.optional-dependencies]
+dev = [
+  "playwright>=1.54",
+  "pytest>=8.3",
+  "ruff>=0.11",
+]
+postmark = ["requests>=2.32"]
+
+[project.scripts]
+fastfunnel = "fastfunnel.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fastfunnel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

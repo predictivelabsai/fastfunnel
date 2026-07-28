@@ -1,0 +1,1 @@
+"""FastHTML web interface."""

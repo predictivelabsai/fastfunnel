@@ -1,0 +1,88 @@
+:root {
+  --ink: #17201d;
+  --muted: #66736d;
+  --line: #dce5df;
+  --paper: #fbfdfb;
+  --panel: #ffffff;
+  --wash: #eef8f1;
+  --mint: #d7f2df;
+  --green: #1e7a4a;
+  --lime: #bbef77;
+  --peach: #ffe7d4;
+  --blue: #e4efff;
+  --shadow: 0 10px 35px rgba(28, 58, 42, .07);
+}
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--ink); background: var(--paper); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; }
+a { color: inherit; text-decoration: none; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { margin-bottom: 0; font-size: 24px; letter-spacing: -.04em; }
+h2 { font-size: 18px; letter-spacing: -.02em; }
+small, .muted { color: var(--muted); }
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 236px minmax(520px, 1fr) 300px; }
+.sidebar { position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 22px 14px; border-right: 1px solid var(--line); background: #f7fbf8; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 22px; }
+.brand > div:last-child { display: grid; }
+.logo-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; color: #173d2c; background: var(--lime); font-weight: 900; }
+.nav-label { display: block; padding: 18px 10px 7px; font-size: 10px; font-weight: 800; letter-spacing: .11em; }
+.nav-link { min-height: 38px; padding: 8px 10px; display: flex; align-items: center; gap: 9px; border-radius: 9px; color: #435049; }
+.nav-link:hover, .nav-link.active { color: #123b28; background: var(--mint); }
+.nav-link.nested { padding-left: 33px; justify-content: space-between; font-size: 12px; }
+.nav-icon { width: 18px; text-align: center; font-weight: 800; }
+details summary { list-style: none; cursor: pointer; }
+.tiny-status { font-size: 9px; text-transform: uppercase; color: var(--muted); }
+.tiny-status.available, .tiny-status.connected { color: var(--green); }
+.main { min-width: 0; }
+.topbar { min-height: 84px; padding: 18px 28px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.86); backdrop-filter: blur(12px); }
+.eyebrow { font-size: 10px; letter-spacing: .1em; font-weight: 800; color: var(--green); }
+.top-actions { display: flex; gap: 9px; align-items: center; }
+.pill, .user-pill, .status { display: inline-flex; padding: 7px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; }
+.pill.success, .status.available, .status.connected, .status.approved, .status.scheduled { background: var(--mint); border-color: #b8ddc4; color: #145d37; }
+.status.stub, .status.prompt-only, .status.review { background: #fff8df; border-color: #eadca9; color: #75601c; }
+.page-content { padding: 26px 28px 60px; }
+.hero { display: flex; align-items: flex-end; justify-content: space-between; padding: 28px; border-radius: 18px; background: linear-gradient(120deg, var(--mint), #f8ffe8); box-shadow: var(--shadow); }
+.hero h2 { max-width: 600px; font-size: 30px; margin-bottom: 8px; }
+.grid { display: grid; gap: 16px; }
+.grid.metrics { grid-template-columns: repeat(4, 1fr); margin: 18px 0; }
+.grid.two { grid-template-columns: 1.25fr .75fr; }
+.cards { grid-template-columns: repeat(3, 1fr); }
+.card { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); }
+.metric strong { display: block; font-size: 26px; letter-spacing: -.04em; margin-top: 8px; }
+.metric .delta { color: var(--green); font-size: 11px; }
+.section-head { display: flex; align-items: center; justify-content: space-between; margin: 28px 0 12px; }
+.btn, button { display: inline-flex; justify-content: center; border: 0; border-radius: 9px; padding: 10px 14px; background: #173d2c; color: white; cursor: pointer; font-weight: 700; }
+.btn.secondary { background: var(--wash); color: var(--ink); border: 1px solid var(--line); }
+input, textarea, select { width: 100%; padding: 11px; border: 1px solid #cfdad3; border-radius: 9px; background: white; color: var(--ink); font: inherit; }
+textarea { min-height: 130px; resize: vertical; }
+label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+form.stack { display: grid; gap: 13px; }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.table th { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.assistant-rail { position: sticky; top: 0; height: 100vh; display: grid; grid-template-rows: auto 1fr auto; border-left: 1px solid var(--line); background: #f8fbff; }
+.rail-head { display: flex; gap: 10px; align-items: center; padding: 22px; border-bottom: 1px solid var(--line); }
+.rail-head > div { display: grid; }
+.spark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 11px; background: var(--blue); color: #31598d; }
+.rail-body { padding: 22px; overflow-y: auto; }
+.rail-card { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+.rail-card.accent { background: #f6ffe9; }
+.rail-card p { margin: 6px 0 0; color: var(--muted); }
+.rail-input { display: flex; gap: 8px; padding: 16px; border-top: 1px solid var(--line); }
+.rail-input input { min-width: 0; }
+.catalog-card { display: flex; flex-direction: column; min-height: 170px; }
+.catalog-card .status { align-self: flex-start; margin-bottom: 12px; }
+.catalog-card p { color: var(--muted); flex: 1; }
+.route { display: inline-block; margin: 3px 4px 0 0; padding: 4px 7px; border-radius: 6px; background: var(--wash); color: var(--muted); font-size: 10px; }
+.empty { padding: 30px; text-align: center; border: 1px dashed #cbd7cf; border-radius: 14px; color: var(--muted); }
+@media (max-width: 1150px) {
+  .app-shell { grid-template-columns: 220px 1fr; }
+  .assistant-rail { display: none; }
+}
+@media (max-width: 760px) {
+  .app-shell { display: block; }
+  .sidebar { position: static; width: 100%; height: auto; }
+  .sidebar nav { display: none; }
+  .topbar, .hero { align-items: flex-start; flex-direction: column; gap: 14px; }
+  .page-content { padding: 18px; }
+  .grid.metrics, .grid.two, .cards { grid-template-columns: 1fr; }
+}

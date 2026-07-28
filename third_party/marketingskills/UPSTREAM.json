@@ -1,0 +1,8 @@
+{
+  "name": "marketingskills",
+  "source": "https://github.com/coreyhaines31/marketingskills",
+  "commit": "7868cb9251fad80a73d26e488a5ad5f6c4a9f335",
+  "license": "MIT",
+  "vendored_at": "2026-07-28",
+  "update_policy": "reviewed pinned snapshot; never update at runtime"
+}

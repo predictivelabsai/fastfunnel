@@ -1,0 +1,13 @@
+services:
+  fastfunnel:
+    build: .
+    ports:
+      - "5005:5005"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - fastfunnel-data:/app/data
+
+volumes:
+  fastfunnel-data:
