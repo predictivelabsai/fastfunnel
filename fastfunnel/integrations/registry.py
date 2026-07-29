@@ -27,16 +27,28 @@ def _i(
 
 
 INTEGRATIONS = (
-    _i("google-ads", "Google Ads", "Advertising", "available",
-       capabilities=("campaigns.read", "campaigns.write", "performance.read")),
+    _i(
+        "google-ads",
+        "Google Ads",
+        "Advertising",
+        "available",
+        capabilities=("campaigns.read", "performance.read"),
+        description="Executable synthetic reporting adapter; live credentials are not configured.",
+    ),
     _i("meta-ads", "Meta Ads", "Advertising", "available",
        capabilities=("campaigns.read", "campaigns.write", "performance.read")),
     _i("linkedin-ads", "LinkedIn Ads", "Advertising", "available",
        capabilities=("campaigns.read", "performance.read")),
     _i("microsoft-ads", "Microsoft Ads", "Advertising"),
     _i("tiktok-ads", "TikTok Ads", "Advertising"),
-    _i("ga4", "Google Analytics 4", "Analytics & search", "available",
-       capabilities=("analytics.read",)),
+    _i(
+        "ga4",
+        "Google Analytics 4",
+        "Analytics & search",
+        "stub",
+        capabilities=("analytics.read",),
+        description="Read contract is defined; credentials and live transport are pending.",
+    ),
     _i("search-console", "Google Search Console", "Analytics & search", "available",
        capabilities=("search.read",)),
     _i("buffer", "Buffer", "Social publishing", "stub", ("buffer", "direct"),

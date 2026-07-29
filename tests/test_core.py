@@ -22,6 +22,7 @@ def test_integration_catalog_contains_launch_and_stub_channels():
     assert get_integration("x").status == "available"
     assert get_integration("bluesky").status == "stub"
     assert get_integration("mastodon").status == "stub"
+    assert get_integration("ga4").status == "stub"
 
 
 def test_predictive_labs_seed_and_content_workflow(tmp_path: Path):

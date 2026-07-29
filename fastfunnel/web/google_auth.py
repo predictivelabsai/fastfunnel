@@ -1,6 +1,9 @@
 """Minimal server-side Google OpenID Connect flow."""
 from __future__ import annotations
-import json, os, secrets
+
+import json
+import os
+import secrets
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -45,6 +48,10 @@ def exchange(request, code):
     if not email or info.get("email_verified") is False: return None
     domains = {x.strip().lower() for x in os.getenv("GOOGLE_ALLOWED_DOMAINS", "").split(",") if x.strip()}
     emails = {x.strip().lower() for x in os.getenv("GOOGLE_ALLOWED_EMAILS", "").split(",") if x.strip()}
-    if domains or emails:
-        if email not in emails and email.rsplit("@", 1)[-1] not in domains: return None
+    if (
+        (domains or emails)
+        and email not in emails
+        and email.rsplit("@", 1)[-1] not in domains
+    ):
+        return None
     return {"email": email, "name": info.get("name") or email}

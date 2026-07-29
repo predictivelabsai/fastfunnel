@@ -74,6 +74,10 @@ form.stack { display: grid; gap: 13px; }
 .catalog-card p { color: var(--muted); flex: 1; }
 .route { display: inline-block; margin: 3px 4px 0 0; padding: 4px 7px; border-radius: 6px; background: var(--wash); color: var(--muted); font-size: 10px; }
 .empty { padding: 30px; text-align: center; border: 1px dashed #cbd7cf; border-radius: 14px; color: var(--muted); }
+.sankey-chart { width: 100%; min-height: 470px; margin-top: 10px; }
+.funnel-filter { display: flex; align-items: end; gap: 10px; min-width: 220px; }
+.funnel-filter label { margin: 0; flex: 1; }
+.funnel-filter button { width: auto; white-space: nowrap; }
 @media (max-width: 1150px) {
   .app-shell { grid-template-columns: 220px 1fr; }
   .assistant-rail { display: none; }

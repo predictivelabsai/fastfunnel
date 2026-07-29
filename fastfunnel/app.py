@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime, timedelta
 
@@ -8,6 +9,7 @@ from starlette.responses import RedirectResponse
 
 from fastfunnel.agents import build_agency_graph
 from fastfunnel.config import ROOT, settings
+from fastfunnel.domain.marketing import MarketingService
 from fastfunnel.domain.store import store
 from fastfunnel.integrations import CATEGORIES, all_integrations, get_integration
 from fastfunnel.integrations.postmark import PostmarkInvitations
@@ -39,6 +41,7 @@ app, rt = fast_app(
             href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap",
         ),
         Link(rel="icon", href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>"),
+        Script(src="https://cdn.plot.ly/plotly-2.35.2.min.js"),
         Style((ROOT / "fastfunnel" / "web" / "static" / "app.css").read_text()),
     )
 )
@@ -384,25 +387,142 @@ def campaigns_view():
 
 @rt("/analytics", methods=["GET"])
 def analytics_view():
+    summary = MarketingService(store).analytics_summary()
+    metrics = summary["metrics"]
+    spend = metrics.get("spend", 0)
+    conversions = metrics.get("conversions", 0)
+    clicks = metrics.get("clicks", 0)
+    impressions = metrics.get("impressions", 0)
+    latest = summary["latest_sync"]
     return shell(
         "Analytics",
         Div(
-            metric("SPEND", "£0", "Awaiting connection"),
-            metric("QUALIFIED LEADS", "0", "Dogfood baseline"),
-            metric("COST / LEAD", "—", "No blended data"),
-            metric("CONTENT REACH", "—", "No live publishers"),
+            metric("SPEND", f"£{spend:,.0f}", "Synthetic Google Ads"),
+            metric("CONVERSIONS", f"{conversions:,.0f}", "Platform-reported"),
+            metric(
+                "COST / CONVERSION",
+                f"£{spend / conversions:,.2f}" if conversions else "—",
+                "30-day blended",
+            ),
+            metric(
+                "CLICK-THROUGH RATE",
+                f"{clicks / impressions * 100:.2f}%" if impressions else "—",
+                f"{impressions:,.0f} impressions",
+            ),
             cls="grid metrics",
         ),
         Div(
-            H2("Governed measurement starts with honest empty states"),
-            P(
-                "Connect ad, analytics and revenue sources to build the immutable raw → "
-                "canonical → semantic pipeline."
+            Div(
+                Div(
+                    Small("LATEST INGESTION"),
+                    H2("Google Ads reporting is flowing"),
+                    P(
+                        f"{latest['rows_written']:,} normalized facts · "
+                        f"{latest['status']} · {latest['finished_at'][:19]} UTC"
+                    )
+                    if latest
+                    else P("No completed sync."),
+                ),
+                A("Open acquisition funnel", href="/analytics/funnel", cls="btn"),
+                cls="hero",
             ),
-            A("Configure integrations", href="/integrations", cls="btn"),
+            P(
+                "The launch dataset is deterministic synthetic data through the same "
+                "read contract used by the future live connector. GA4 remains visibly "
+                "unconnected until credentials are supplied."
+            ),
             cls="card",
         ),
         active="/analytics",
+    )
+
+
+@rt("/analytics/funnel", methods=["GET"])
+def funnel_view(days: int = 30):
+    days = max(1, min(int(days), 90))
+    result = MarketingService(store).funnel(days=days)
+    definition = result["definition"]
+    trace_json = json.dumps([result["trace"]])
+    layout_json = json.dumps(
+        {
+            "height": 470,
+            "margin": {"l": 18, "r": 18, "t": 24, "b": 18},
+            "paper_bgcolor": "white",
+            "plot_bgcolor": "white",
+            "font": {"family": "Inter, sans-serif", "size": 11, "color": "#172033"},
+        }
+    )
+    rows = [
+        Tr(
+            Td(stage.name),
+            Td(f"{result['values'][index]:,}"),
+            Td(
+                "—"
+                if result["step_conversion"][index] is None
+                else f"{result['step_conversion'][index]:.1f}%"
+            ),
+            Td(
+                "—"
+                if result["overall_conversion"][index] is None
+                else f"{result['overall_conversion'][index]:.1f}%"
+            ),
+        )
+        for index, stage in enumerate(result["stages"])
+    ]
+    return shell(
+        "Acquisition funnel",
+        Div(
+            Div(
+                Div(
+                    Small("CONFIGURABLE FUNNEL · SYNTHETIC COHORT"),
+                    H2(definition["name"]),
+                    P(
+                        f"{definition['description']} Cohort since {result['since']} "
+                        f"({days} days)."
+                    ),
+                ),
+                Form(
+                    Label(
+                        "Window",
+                        Select(
+                            *[
+                                Option(
+                                    f"{value} days",
+                                    value=str(value),
+                                    selected=value == days,
+                                )
+                                for value in (7, 14, 30, 60, 90)
+                            ],
+                            name="days",
+                        ),
+                    ),
+                    Button("Apply", type="submit"),
+                    method="get",
+                    action="/analytics/funnel",
+                    cls="funnel-filter",
+                ),
+                cls="hero",
+            ),
+            Div(id="acquisition-sankey", cls="sankey-chart"),
+            Script(
+                NotStr(
+                    "Plotly.newPlot('acquisition-sankey',"
+                    f"{trace_json},{layout_json},"
+                    "{displayModeBar:false,responsive:true});"
+                )
+            ),
+            cls="card",
+        ),
+        Div(
+            Div(H2("Stage metrics"), Small("Conserved cohort counts"), cls="section-head"),
+            Table(
+                Thead(Tr(Th("Stage"), Th("People"), Th("From previous"), Th("Overall"))),
+                Tbody(*rows),
+                cls="table",
+            ),
+            cls="card",
+        ),
+        active="/analytics/funnel",
     )
 
 

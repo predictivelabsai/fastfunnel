@@ -15,6 +15,12 @@ approving demo administrator.
 - Light three-pane FastHTML cockpit with a distinct FastFunnel identity.
 - Organization/company/user/membership/invitation persistence.
 - Content draft → admin review → bounded autonomous scheduling.
+- Configurable, cohort-based digital acquisition funnels with conserved Sankey
+  progression and drop-off reporting.
+- Idempotent synthetic Google Ads ingestion into normalized campaign facts,
+  with sync freshness and run history.
+- SQLite-backed durable job queue and a separate `python -m fastfunnel.worker`
+  process for background connector work.
 - LangGraph observe → plan → policy-gate workflow.
 - Complete vendored Marketing Skills catalog: 49 skills at pinned upstream
   commit `7868cb9251fad80a73d26e488a5ad5f6c4a9f335`.
@@ -26,6 +32,8 @@ approving demo administrator.
 
 Live social publishing and ad mutations are intentionally disabled until their
 credential, approval, idempotency, and audit adapters are complete.
+GA4 has a typed read contract but remains an honest stub until credentials and
+the live transport are supplied.
 
 ## Run locally
 
@@ -36,6 +44,13 @@ uv run python -m fastfunnel.app
 ```
 
 Open <http://127.0.0.1:5005>.
+
+Run one queued background job, or start the polling worker:
+
+```bash
+uv run python -m fastfunnel.worker --once
+uv run python -m fastfunnel.worker
+```
 
 Run the quality gate:
 

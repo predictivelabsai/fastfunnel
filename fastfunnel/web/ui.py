@@ -9,7 +9,7 @@ def icon(name: str) -> Span:
     glyphs = {
         "dashboard": "⌂", "plan": "◇", "agency": "✦", "content": "✎",
         "review": "✓", "calendar": "□", "campaigns": "◎", "analytics": "⌁",
-        "skills": "⚡", "integrations": "⌘", "team": "♙",
+        "funnel": "▽", "skills": "⚡", "integrations": "⌘", "team": "♙",
     }
     return Span(glyphs.get(name, "·"), cls="nav-icon")
 
@@ -48,6 +48,7 @@ def sidebar(active: str = "/") -> Aside:
             nav_link("Paid Campaigns", "/campaigns", "campaigns", active),
             Small("MEASURE", cls="nav-label"),
             nav_link("Analytics", "/analytics", "analytics", active),
+            nav_link("Acquisition Funnel", "/analytics/funnel", "funnel", active),
             Small("LIBRARY", cls="nav-label"),
             nav_link("Skills (49)", "/skills", "skills", active),
             Details(

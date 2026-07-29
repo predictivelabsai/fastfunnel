@@ -13,7 +13,8 @@ import sqlite3
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request as UrlRequest, urlopen
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 from fasthtml.common import *
 from starlette.responses import JSONResponse, RedirectResponse

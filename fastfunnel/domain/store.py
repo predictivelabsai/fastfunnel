@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastfunnel.config import settings
+from fastfunnel.domain.schema import DDL, SCHEMA_VERSION
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -88,44 +89,64 @@ class Store:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            conn.executescript(DDL)
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)",
+                (SCHEMA_VERSION, now_iso()),
+            )
             if conn.execute("SELECT 1 FROM organizations LIMIT 1").fetchone():
                 self._refresh_demo_identity(conn)
-                return
-            created = now_iso()
-            org_id, company_id, user_id = "org_predictivelabs", "co_predictivelabs", "usr_admin"
-            conn.execute(
-                "INSERT INTO organizations VALUES (?, ?, ?, ?)",
-                (org_id, "Predictive Labs", "predictive-labs", created),
-            )
-            profile = {
-                "website": f"https://{settings.seed_domain}",
-                "industry": "AI-first platform consultancy",
-                "market": "Global",
-                "approval_policy": "bounded_autonomy_admin_approval",
-            }
-            conn.execute(
-                """INSERT INTO companies
-                   (id, organization_id, name, domain, profile_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    company_id,
+            else:
+                created = now_iso()
+                org_id, company_id, user_id = (
+                    "org_predictivelabs",
+                    "co_predictivelabs",
+                    "usr_admin",
+                )
+                conn.execute(
+                    "INSERT INTO organizations VALUES (?, ?, ?, ?)",
+                    (org_id, "Predictive Labs", "predictive-labs", created),
+                )
+                profile = {
+                    "website": f"https://{settings.seed_domain}",
+                    "industry": "AI-first platform consultancy",
+                    "market": "Global",
+                    "approval_policy": "bounded_autonomy_admin_approval",
+                }
+                conn.execute(
+                    """INSERT INTO companies
+                       (id, organization_id, name, domain, profile_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        company_id,
+                        org_id,
+                        settings.seed_company,
+                        settings.seed_domain,
+                        json.dumps(profile),
+                        created,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO users VALUES (?, ?, ?, ?)",
+                    (user_id, settings.admin_email, "Demo Admin", created),
+                )
+                conn.execute(
+                    "INSERT INTO memberships VALUES (?, ?, ?)",
+                    (org_id, user_id, "admin"),
+                )
+                self._audit(
+                    conn,
                     org_id,
-                    settings.seed_company,
-                    settings.seed_domain,
-                    json.dumps(profile),
-                    created,
-                ),
-            )
-            conn.execute(
-                "INSERT INTO users VALUES (?, ?, ?, ?)",
-                (user_id, settings.admin_email, "Demo Admin", created),
-            )
-            conn.execute(
-                "INSERT INTO memberships VALUES (?, ?, ?)", (org_id, user_id, "admin")
-            )
-            self._audit(
-                conn, org_id, company_id, user_id, "workspace.seeded", "company", company_id, profile
-            )
+                    company_id,
+                    user_id,
+                    "workspace.seeded",
+                    "company",
+                    company_id,
+                    profile,
+                )
+        from fastfunnel.domain.marketing import MarketingService
+
+        MarketingService(self).seed()
 
     @staticmethod
     def _refresh_demo_identity(conn: sqlite3.Connection) -> None:
