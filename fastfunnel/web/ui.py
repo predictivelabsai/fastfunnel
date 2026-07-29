@@ -58,6 +58,7 @@ def sidebar(active: str = "/") -> Aside:
             ),
             Small("SETTINGS", cls="nav-label"),
             nav_link("Team & Invites", "/team", "team", active),
+            nav_link("Developers", "/developers", "integrations", active),
         ),
         cls="sidebar",
     )

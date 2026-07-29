@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 from fasthtml.common import *
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from fastfunnel.agents import build_agency_graph
 from fastfunnel.config import ROOT, settings
@@ -15,6 +15,8 @@ from fastfunnel.integrations import CATEGORIES, all_integrations, get_integratio
 from fastfunnel.integrations.postmark import PostmarkInvitations
 from fastfunnel.skills import discover_skills, upstream
 from fastfunnel.web import account_auth, google_auth
+from fastfunnel.web.api import api
+from fastfunnel.web.developer import developer_page
 from fastfunnel.web.landing import landing_page
 from fastfunnel.web.ui import integration_group_counts, shell, status_badge
 
@@ -23,8 +25,8 @@ def auth_before(req, sess):
     if settings.dev_auth_bypass:
         return None
     if (
-        req.url.path in {"/", "/healthz"}
-        or req.url.path.startswith(("/auth/", "/static/"))
+        req.url.path in {"/", "/api", "/healthz", "/developers", "/swagger.json"}
+        or req.url.path.startswith(("/api/", "/auth/", "/static/"))
     ):
         return None
     if not sess.get("user_email"):
@@ -45,10 +47,21 @@ app, rt = fast_app(
         Style((ROOT / "fastfunnel" / "web" / "static" / "app.css").read_text()),
     )
 )
+app.mount("/api", api)
 store.initialize()
 account_auth.register_fasthtml_routes(
     rt, app_name="FastFunnel", session_key="user_email", success_path="/"
 )
+
+
+@rt("/swagger.json", methods=["GET"])
+def swagger_schema():
+    return JSONResponse(api.openapi())
+
+
+@rt("/developers", methods=["GET"])
+def developers():
+    return developer_page()
 
 
 @rt("/healthz", methods=["GET"])

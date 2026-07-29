@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 dependencies = [
+  "fastapi>=0.115",
   "python-fasthtml>=0.12.30",
   "langgraph>=0.6.0",
   "pydantic>=2.10",
