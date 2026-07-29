@@ -148,6 +148,47 @@ class Store:
 
         MarketingService(self).seed()
 
+    def default_company_id(self) -> str:
+        with self.connect() as conn:
+            row = conn.execute("SELECT id FROM companies ORDER BY created_at LIMIT 1").fetchone()
+        if not row:
+            raise LookupError("No company workspace exists")
+        return row["id"]
+
+    def company_for_user(self, email: str | None = None, company_id: str | None = None) -> dict:
+        """Resolve a company only through an explicit tenant or user membership."""
+        with self.connect() as conn:
+            if company_id:
+                row = conn.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
+            elif email:
+                row = conn.execute(
+                    """SELECT companies.* FROM companies
+                       JOIN memberships ON memberships.organization_id=companies.organization_id
+                       JOIN users ON users.id=memberships.user_id
+                       WHERE lower(users.email)=lower(?)
+                       ORDER BY companies.created_at LIMIT 1""",
+                    (email,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM companies ORDER BY created_at LIMIT 1"
+                ).fetchone()
+        if not row:
+            raise LookupError("No authorized company workspace")
+        return dict(row)
+
+    def user_for_email(self, email: str | None = None) -> dict:
+        with self.connect() as conn:
+            if email:
+                row = conn.execute(
+                    "SELECT * FROM users WHERE lower(email)=lower(?)", (email,)
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM users ORDER BY created_at LIMIT 1").fetchone()
+        if not row:
+            raise LookupError("No user exists")
+        return dict(row)
+
     @staticmethod
     def _refresh_demo_identity(conn: sqlite3.Connection) -> None:
         """Keep existing local demo databases aligned with the public demo identity."""
@@ -175,9 +216,14 @@ class Store:
             (settings.admin_email, "Demo Admin", admin["id"]),
         )
 
-    def dashboard(self) -> dict:
+    def dashboard(self, company_id: str | None = None) -> dict:
         with self.connect() as conn:
-            company = dict(conn.execute("SELECT * FROM companies LIMIT 1").fetchone())
+            company = dict(
+                conn.execute(
+                    "SELECT * FROM companies WHERE id=COALESCE(?, id) ORDER BY created_at LIMIT 1",
+                    (company_id,),
+                ).fetchone()
+            )
             counts = {}
             for status in ("draft", "review", "approved", "scheduled", "published"):
                 counts[status] = conn.execute(
@@ -201,30 +247,44 @@ class Store:
                 "invitations": [dict(row) for row in invitations],
             }
 
-    def list_content(self) -> list[dict]:
+    def list_content(self, company_id: str | None = None) -> list[dict]:
+        company_id = company_id or self.default_company_id()
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM content_items ORDER BY created_at DESC"
+                """SELECT * FROM content_items WHERE company_id=?
+                   ORDER BY created_at DESC""",
+                (company_id,),
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def create_content(self, title: str, body: str, channel: str) -> str:
+    def create_content(
+        self,
+        title: str,
+        body: str,
+        channel: str,
+        *,
+        company_id: str | None = None,
+        actor_id: str = "usr_admin",
+    ) -> str:
         item_id = new_id("cnt")
         created = now_iso()
+        company_id = company_id or self.default_company_id()
         with self.connect() as conn:
-            company = conn.execute("SELECT * FROM companies LIMIT 1").fetchone()
+            company = conn.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
+            if not company:
+                raise LookupError("Unknown company")
             conn.execute(
                 """INSERT INTO content_items
                    (id, company_id, title, body, channel, status, created_by,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, 'review', 'usr_admin', ?, ?)""",
-                (item_id, company["id"], title, body, channel, created, created),
+                   VALUES (?, ?, ?, ?, ?, 'review', ?, ?, ?)""",
+                (item_id, company["id"], title, body, channel, actor_id, created, created),
             )
             self._audit(
                 conn,
                 company["organization_id"],
                 company["id"],
-                "usr_admin",
+                actor_id,
                 "content.created",
                 "content",
                 item_id,
@@ -232,52 +292,67 @@ class Store:
             )
         return item_id
 
-    def approve_content(self, item_id: str) -> None:
+    def approve_content(
+        self,
+        item_id: str,
+        *,
+        company_id: str | None = None,
+        reviewer_id: str = "usr_admin",
+    ) -> None:
+        company_id = company_id or self.default_company_id()
         with self.connect() as conn:
             item = conn.execute(
                 """SELECT content_items.*, companies.organization_id
                    FROM content_items JOIN companies ON companies.id=content_items.company_id
-                   WHERE content_items.id=?""",
-                (item_id,),
+                   WHERE content_items.id=? AND content_items.company_id=?""",
+                (item_id, company_id),
             ).fetchone()
             if not item or item["status"] != "review":
                 return
             conn.execute(
-                """UPDATE content_items SET status='approved', approved_by='usr_admin',
-                   updated_at=? WHERE id=?""",
-                (now_iso(), item_id),
+                """UPDATE content_items SET status='approved', approved_by=?,
+                   updated_at=? WHERE id=? AND company_id=?""",
+                (reviewer_id, now_iso(), item_id, company_id),
             )
             self._audit(
                 conn,
                 item["organization_id"],
                 item["company_id"],
-                "usr_admin",
+                reviewer_id,
                 "content.approved",
                 "content",
                 item_id,
                 {},
             )
 
-    def schedule_content(self, item_id: str, scheduled_for: str) -> None:
+    def schedule_content(
+        self,
+        item_id: str,
+        scheduled_for: str,
+        *,
+        company_id: str | None = None,
+        actor_id: str = "usr_admin",
+    ) -> None:
+        company_id = company_id or self.default_company_id()
         with self.connect() as conn:
             item = conn.execute(
                 """SELECT content_items.*, companies.organization_id
                    FROM content_items JOIN companies ON companies.id=content_items.company_id
-                   WHERE content_items.id=?""",
-                (item_id,),
+                   WHERE content_items.id=? AND content_items.company_id=?""",
+                (item_id, company_id),
             ).fetchone()
             if not item or item["status"] != "approved":
                 return
             conn.execute(
                 """UPDATE content_items SET status='scheduled', scheduled_for=?,
-                   updated_at=? WHERE id=?""",
-                (scheduled_for, now_iso(), item_id),
+                   updated_at=? WHERE id=? AND company_id=?""",
+                (scheduled_for, now_iso(), item_id, company_id),
             )
             self._audit(
                 conn,
                 item["organization_id"],
                 item["company_id"],
-                "usr_admin",
+                actor_id,
                 "content.scheduled",
                 "content",
                 item_id,

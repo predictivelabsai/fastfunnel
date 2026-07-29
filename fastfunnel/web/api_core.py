@@ -177,7 +177,7 @@ class SQLiteBackend:
 
 def _serialise_row(row: sqlite3.Row) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for key in row.keys():
+    for key in row:
         value = row[key]
         if isinstance(value, bytes):
             value = value.hex()
@@ -284,6 +284,7 @@ def create_sqlite_api(
     base_url: str,
     backend: SQLiteBackend,
     resources: tuple[Resource, ...],
+    public_reads: bool = True,
 ) -> FastAPI:
     """Create the product API and register its typed resource routes."""
 
@@ -292,9 +293,14 @@ def create_sqlite_api(
         version=version,
         description=(
             f"{description}\n\n"
-            "**Access model:** reads are public. Selected writes are implemented but "
-            "disabled unless the deployment configures `FASTSME_API_TOKEN`; write "
-            "clients then send it as a bearer token."
+            "**Access model:** "
+            + (
+                "reads are public. Selected writes are implemented but "
+                "disabled unless the deployment configures `FASTSME_API_TOKEN`; write "
+                "clients then send it as a bearer token."
+                if public_reads
+                else "tenant data reads and writes require the configured bearer token."
+            )
         ),
         docs_url="/docs",
         redoc_url="/redoc",
@@ -308,7 +314,7 @@ def create_sqlite_api(
         allow_origins=["*"],
         allow_credentials=False,
         allow_methods=["GET", "HEAD", "OPTIONS"],
-        allow_headers=["Accept", "Content-Type"],
+        allow_headers=["Accept", "Content-Type", "Authorization", "X-FastFunnel-Company"],
     )
 
     @api.exception_handler(HTTPException)
@@ -353,6 +359,7 @@ def create_sqlite_api(
             summary=f"List {resource.title.lower()}",
             description=resource.description,
             operation_id=f"list_{resource.slug.replace('-', '_')}",
+            dependencies=[] if public_reads else [Depends(require_write_token)],
         )
         def list_items(
             limit: int = Query(default=50, ge=1, le=200),
@@ -374,6 +381,7 @@ def create_sqlite_api(
             tags=[resource.title],
             summary=f"Get one {resource.title.lower()} record",
             operation_id=f"get_{resource.slug.replace('-', '_')}",
+            dependencies=[] if public_reads else [Depends(require_write_token)],
         )
         def get_item(item_id: str) -> dict[str, Any]:
             row = backend.get(resource, item_id)

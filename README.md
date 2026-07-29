@@ -19,6 +19,17 @@ approving demo administrator.
   progression and drop-off reporting.
 - Idempotent synthetic Google Ads ingestion into normalized campaign facts,
   with sync freshness and run history.
+- Replayable HubSpot, Brevo, and GA4 source adapters with immutable raw
+  extracts, source accounts, cursors, and normalized lifecycle records.
+- Tenant-editable Marketing Skills overlays that preserve the pinned upstream
+  library and version every workspace customization.
+- Governed content generation and social-publication proposals with exact
+  payload approvals, durable idempotency, worker execution, and receipts.
+- Composio and Arcade delegated execution adapters. They remain unconnected
+  until API keys and per-user connected-account references are supplied.
+- KPI Explorer plus Google Sheets and allow-listed FastSheets/FastInsights
+  destination contracts. FastOffice remains visible as a stub until its sister
+  repository exposes a token-gated artifact API.
 - SQLite-backed durable job queue and a separate `python -m fastfunnel.worker`
   process for background connector work.
 - LangGraph observe → plan → policy-gate workflow.
@@ -30,10 +41,10 @@ approving demo administrator.
 - Honest stubs for Bluesky, Mastodon, and unfinished providers.
 - Synthetic/local operation without API credentials.
 
-Live social publishing and ad mutations are intentionally disabled until their
-credential, approval, idempotency, and audit adapters are complete.
-GA4 has a typed read contract but remains an honest stub until credentials and
-the live transport are supplied.
+Live social publishing stays disabled until a tenant connects Composio or
+Arcade and approves an exact content payload. Google Ads live transport remains
+an honest stub. GA4, HubSpot, and Brevo remain unconnected until deployment
+secrets are supplied.
 
 ## Run locally
 
@@ -80,4 +91,5 @@ bash scripts/build_demo_gif.sh
 
 - [Comprehensive implementation plan](docs/IMPLEMENTATION_PLAN.md)
 - [Current architecture](docs/ARCHITECTURE.md)
+- [Backend architecture and data flows](docs/architecture_readme.md)
 - [Marketing Skills attribution](third_party/marketingskills/UPSTREAM.json)

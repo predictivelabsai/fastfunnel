@@ -42,6 +42,26 @@ class MarketingService:
                     created,
                 ),
             )
+            for provider, capabilities in (
+                ("hubspot", ["contacts.read", "lifecycle.read", "revenue.read"]),
+                ("brevo", ["campaigns.read", "contacts.read", "performance.read"]),
+                ("composio", ["tools.execute", "auth.delegate"]),
+                ("arcade", ["tools.execute", "auth.delegate"]),
+                ("google-sheets", ["data.export"]),
+                ("fastsme", ["data.export"]),
+            ):
+                conn.execute(
+                    """INSERT OR IGNORE INTO integration_connections
+                       (id, company_id, provider, mode, status, capabilities_json, created_at)
+                       VALUES (?, ?, ?, 'credentials-required', 'available', ?, ?)""",
+                    (
+                        f"conn_{provider.replace('-', '_')}_pending",
+                        company["id"],
+                        provider,
+                        json.dumps(capabilities),
+                        created,
+                    ),
+                )
             conn.execute(
                 """INSERT OR IGNORE INTO integration_connections
                    (id, company_id, provider, mode, status, capabilities_json, created_at)
@@ -90,6 +110,23 @@ class MarketingService:
                 self._seed_journeys(conn, company["id"])
 
         self.sync_google_ads()
+        from fastfunnel.domain.analytics import AnalyticsService
+        from fastfunnel.domain.ingestion import IngestionService
+        from fastfunnel.integrations.sources import (
+            BrevoConnector,
+            GA4SourceConnector,
+            HubSpotConnector,
+        )
+
+        ingestion = IngestionService(self.store)
+        company_id = self.store.default_company_id()
+        for connector in (
+            HubSpotConnector("synthetic"),
+            BrevoConnector("synthetic"),
+            GA4SourceConnector("synthetic"),
+        ):
+            ingestion.sync(connector, company_id=company_id)
+        AnalyticsService(self.store).seed(company_id)
 
     @staticmethod
     def _seed_journeys(conn, company_id: str) -> None:
@@ -123,18 +160,26 @@ class MarketingService:
             rows,
         )
 
-    def sync_google_ads(self) -> dict:
-        return self.sync_connector(GoogleAdsConnector(mode="synthetic"), lookback_days=30)
+    def sync_google_ads(self, company_id: str | None = None) -> dict:
+        return self.sync_connector(
+            GoogleAdsConnector(mode="synthetic"),
+            lookback_days=30,
+            company_id=company_id,
+        )
 
     def sync_connector(
-        self, connector: MarketingReadConnector, lookback_days: int = 30
+        self,
+        connector: MarketingReadConnector,
+        lookback_days: int = 30,
+        company_id: str | None = None,
     ) -> dict:
+        company_id = company_id or self.store.default_company_id()
         run_id = new_id("sync")
         started = now_iso()
         end = datetime.now(UTC).date()
         start = end - timedelta(days=lookback_days - 1)
         with self.store.connect() as conn:
-            company = conn.execute("SELECT * FROM companies LIMIT 1").fetchone()
+            company = conn.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
             connection = conn.execute(
                 """SELECT * FROM integration_connections
                    WHERE company_id=? AND provider=?""",
@@ -150,7 +195,7 @@ class MarketingService:
             campaigns, facts = connector.fetch(start, end)
             ingested = now_iso()
             with self.store.connect() as conn:
-                company = conn.execute("SELECT * FROM companies LIMIT 1").fetchone()
+                company = conn.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
                 for campaign in campaigns:
                     conn.execute(
                         """INSERT INTO campaigns
@@ -211,8 +256,9 @@ class MarketingService:
                 )
                 conn.execute(
                     """UPDATE integration_connections
-                       SET status='available', last_checked_at=? WHERE id=?""",
-                    (now_iso(), "conn_google_ads_synthetic"),
+                       SET status='available', last_checked_at=?
+                       WHERE company_id=? AND provider=?""",
+                    (now_iso(), company_id, connector.provider),
                 )
             return {"run_id": run_id, "status": "succeeded", "rows": len(facts)}
         except Exception as exc:
@@ -224,9 +270,10 @@ class MarketingService:
                 )
             raise
 
-    def analytics_summary(self) -> dict:
+    def analytics_summary(self, company_id: str | None = None) -> dict:
+        company_id = company_id or self.store.default_company_id()
         with self.store.connect() as conn:
-            company = conn.execute("SELECT * FROM companies LIMIT 1").fetchone()
+            company = conn.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
             rows = conn.execute(
                 """SELECT metric, SUM(value) AS value
                    FROM marketing_facts WHERE company_id=? GROUP BY metric""",
@@ -241,10 +288,17 @@ class MarketingService:
             ).fetchone()
             return {"metrics": metrics, "latest_sync": dict(latest) if latest else None}
 
-    def funnel(self, funnel_id: str = DEFAULT_FUNNEL_ID, days: int = 30) -> dict:
+    def funnel(
+        self,
+        funnel_id: str = DEFAULT_FUNNEL_ID,
+        days: int = 30,
+        company_id: str | None = None,
+    ) -> dict:
+        company_id = company_id or self.store.default_company_id()
         with self.store.connect() as conn:
             funnel = conn.execute(
-                "SELECT * FROM funnel_definitions WHERE id=?", (funnel_id,)
+                "SELECT * FROM funnel_definitions WHERE id=? AND company_id=?",
+                (funnel_id, company_id),
             ).fetchone()
             if not funnel:
                 raise LookupError(f"Unknown funnel: {funnel_id}")
@@ -277,11 +331,12 @@ class MarketingService:
             )
             return result
 
-    def enqueue_sync(self) -> str:
+    def enqueue_sync(self, company_id: str | None = None) -> str:
+        company_id = company_id or self.store.default_company_id()
         today = datetime.now(UTC).date().isoformat()
         job_id = new_id("job")
         with self.store.connect() as conn:
-            company = conn.execute("SELECT * FROM companies LIMIT 1").fetchone()
+            company = conn.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
             conn.execute(
                 """INSERT OR IGNORE INTO job_queue
                    (id, company_id, job_type, payload_json, idempotency_key,

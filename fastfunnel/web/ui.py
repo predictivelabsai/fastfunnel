@@ -48,6 +48,7 @@ def sidebar(active: str = "/") -> Aside:
             nav_link("Paid Campaigns", "/campaigns", "campaigns", active),
             Small("MEASURE", cls="nav-label"),
             nav_link("Analytics", "/analytics", "analytics", active),
+            nav_link("KPI Explorer", "/analytics/explorer", "analytics", active),
             nav_link("Acquisition Funnel", "/analytics/funnel", "funnel", active),
             Small("LIBRARY", cls="nav-label"),
             nav_link("Skills (49)", "/skills", "skills", active),

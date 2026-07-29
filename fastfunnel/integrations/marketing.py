@@ -63,8 +63,8 @@ class GoogleAdsConnector(MarketingReadConnector):
             return "available", "Deterministic synthetic reporting adapter"
         missing = [name for name in self.required_env if not os.getenv(name)]
         if missing:
-            return "available", f"Live reporting requires: {', '.join(missing)}"
-        return "connected", "Live Google Ads credentials are configured"
+            return "stub", f"Live reporting requires: {', '.join(missing)}"
+        return "stub", "Credentials detected; live transport implementation is pending"
 
     def fetch(self, start: date, end: date) -> tuple[list[CampaignRecord], list[FactRecord]]:
         if self.mode != "synthetic":

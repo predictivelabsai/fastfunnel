@@ -1,6 +1,6 @@
 """Versioned SQLite schema for the operational marketing backend."""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DDL = """
 PRAGMA foreign_keys = ON;
@@ -130,4 +130,224 @@ CREATE TABLE IF NOT EXISTS job_queue (
 );
 CREATE INDEX IF NOT EXISTS ix_job_queue_due
     ON job_queue(status, available_at);
+
+CREATE TABLE IF NOT EXISTS platform_accounts (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, provider, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS data_sources (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    platform_account_id TEXT REFERENCES platform_accounts(id),
+    provider TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL,
+    schedule_minutes INTEGER NOT NULL DEFAULT 1440,
+    lookback_days INTEGER NOT NULL DEFAULT 30,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_data_sources_company
+    ON data_sources(company_id, provider);
+
+CREATE TABLE IF NOT EXISTS sync_cursors (
+    data_source_id TEXT PRIMARY KEY REFERENCES data_sources(id) ON DELETE CASCADE,
+    cursor_json TEXT NOT NULL DEFAULT '{}',
+    watermark_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS raw_extracts (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    data_source_id TEXT NOT NULL REFERENCES data_sources(id),
+    sync_run_id TEXT REFERENCES sync_runs(id),
+    provider TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    partition_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    source_updated_at TEXT,
+    ingested_at TEXT NOT NULL,
+    UNIQUE(data_source_id, object_type, partition_key, payload_hash)
+);
+CREATE INDEX IF NOT EXISTS ix_raw_extracts_replay
+    ON raw_extracts(company_id, provider, object_type, partition_key);
+
+CREATE TABLE IF NOT EXISTS crm_entities (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    lifecycle_stage TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT,
+    revenue_value REAL,
+    currency TEXT NOT NULL DEFAULT '',
+    properties_json TEXT NOT NULL DEFAULT '{}',
+    source_updated_at TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    UNIQUE(company_id, provider, entity_type, external_id)
+);
+CREATE INDEX IF NOT EXISTS ix_crm_entities_company_stage
+    ON crm_entities(company_id, lifecycle_stage, occurred_at);
+
+CREATE TABLE IF NOT EXISTS field_definitions (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    slug TEXT NOT NULL,
+    label TEXT NOT NULL,
+    field_type TEXT NOT NULL,
+    aggregation TEXT NOT NULL,
+    expression TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, slug, version)
+);
+
+CREATE TABLE IF NOT EXISTS transformation_rules (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    name TEXT NOT NULL,
+    target_field TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 100,
+    condition_json TEXT NOT NULL,
+    value_expression TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS exchange_rates (
+    rate_date TEXT NOT NULL,
+    base_currency TEXT NOT NULL,
+    quote_currency TEXT NOT NULL,
+    rate REAL NOT NULL,
+    source TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY(rate_date, base_currency, quote_currency)
+);
+
+CREATE TABLE IF NOT EXISTS saved_queries (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    name TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS destination_connections (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    provider TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS export_runs (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    destination_id TEXT NOT NULL REFERENCES destination_connections(id),
+    saved_query_id TEXT REFERENCES saved_queries(id),
+    status TEXT NOT NULL,
+    rows_written INTEGER NOT NULL DEFAULT 0,
+    receipt_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS skill_overlays (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    skill_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    instructions TEXT NOT NULL DEFAULT '',
+    context_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS provider_identities (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    provider TEXT NOT NULL,
+    external_user_id TEXT NOT NULL,
+    connected_account_id TEXT,
+    status TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, user_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS action_requests (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    actor_id TEXT NOT NULL REFERENCES users(id),
+    action_type TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT,
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    status TEXT NOT NULL,
+    approval_id TEXT REFERENCES approvals(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS action_executions (
+    id TEXT PRIMARY KEY,
+    action_request_id TEXT NOT NULL REFERENCES action_requests(id),
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    provider_receipt_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS kpi_definitions (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id),
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    numerator_metric TEXT NOT NULL,
+    denominator_metric TEXT,
+    format TEXT NOT NULL DEFAULT 'number',
+    target_value REAL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, slug)
+);
 """

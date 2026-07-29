@@ -1,6 +1,6 @@
 # FastFunnel Agent Eval Report
 
-- Generated: 2026-07-28T01:13:22.735472+00:00
+- Generated: 2026-07-29T19:59:43.299013+00:00
 - **Pass rate: 100%** (4/4)
 - Judge: deterministic policy and contract assertions
 

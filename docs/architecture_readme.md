@@ -4,11 +4,11 @@ This document is the engineering reference for FastFunnel's first functional
 vertical slice. It describes the target that the current implementation is
 moving toward, not a claim that every production capability is already live.
 
-The first slice deliberately uses SQLite and deterministic synthetic marketing
-data so the entire product works without provider credentials. Google Ads is
-the first live read connector target. GA4 follows the same connector contract
-when credentials become available. Funnels are data, not hard-coded pages: a
-workspace can create and edit its own ordered stage definitions.
+The current slice deliberately uses SQLite and deterministic synthetic
+marketing data so the entire product works without provider credentials.
+HubSpot, Brevo, and GA4 implement live HTTP transports behind injectable
+contracts; Google Ads live transport remains pending. Funnels are data, not
+hard-coded pages: a workspace can create and edit ordered stage definitions.
 
 ## Scope and decisions
 
@@ -22,6 +22,10 @@ The first slice provides:
 - a conserved Sankey graph with conversion and drop-off values;
 - a database-backed job queue processed by a separate worker;
 - a connector boundary with synthetic, Google Ads, and GA4-ready adapters;
+- replayable HubSpot, Brevo, and GA4 ingestion with immutable raw extracts;
+- tenant-editable overlays over the immutable pinned Marketing Skills library;
+- a typed KPI explorer and Google Sheets/FastSME destination boundary;
+- Composio and Arcade execution adapters with per-tenant/user identities;
 - the existing approval and audit boundary, with durable provider-action
   idempotency required before external mutations are enabled;
 - a UI kept visually close to the existing cockpit while replacing static
@@ -102,9 +106,16 @@ fastfunnel/
 │   ├── store.py              # SQLite connection, identity/content, audit
 │   ├── schema.py             # versioned operational marketing schema
 │   ├── marketing.py          # ingestion, read models, seed, queue operations
+│   ├── ingestion.py          # raw extracts, cursors, replay, normalization
+│   ├── analytics.py          # KPI semantics, explorer, saved queries, exports
+│   ├── content.py            # skill-grounded draft creation
+│   ├── actions.py            # governed external action lifecycle
 │   └── funnels.py            # funnel evaluator and Sankey projection
 ├── integrations/
 │   ├── marketing.py          # connector contract, Google Ads, GA4
+│   ├── sources.py            # HubSpot, Brevo, and GA4 transports
+│   ├── destinations.py       # Google Sheets and FastSME exports
+│   ├── execution.py          # Composio and Arcade delegated execution
 │   ├── registry.py           # honest integration capability registry
 │   └── postmark.py           # transactional email adapter
 ├── agents/                   # typed application tools only
@@ -227,6 +238,64 @@ campaign/fact return shape. GA4-specific dimensions will map into the common
 fact and journey-entity model so adding keys later does not require changing
 the funnel engine or cockpit query contract. Until it is connected, seeded
 `journey_entities` supply the complete funnel cohort.
+
+### Replayable sources and lifecycle data
+
+`SourceConnector` extends the first campaign-only contract with an account,
+cursor, raw records, and provider timestamps. `domain/ingestion.py` persists
+canonical payloads in `raw_extracts` before normalization and advances a
+per-source cursor only after the batch succeeds. Content hashes make repeated
+partitions idempotent and allow normalized tables to be rebuilt by replay.
+
+HubSpot normalizes contacts and lifecycle stages into `crm_entities`. Brevo
+normalizes contacts plus campaign delivery, open, and click metrics. GA4
+normalizes report rows. Their live HTTP transports are dependency-injected, so
+tests exercise provider request contracts without using credentials.
+
+```mermaid
+flowchart LR
+    Source["HubSpot / Brevo / GA4"] --> Batch["SourceBatch + cursor"]
+    Batch --> Raw[("raw_extracts<br/>content hashed")]
+    Raw --> Normalize["Provider-neutral normalization"]
+    Normalize --> CRM[("crm_entities")]
+    Normalize --> Facts[("marketing_facts")]
+    Normalize --> Cursor[("sync_cursors")]
+    Raw --> Replay["Replay"]
+    Replay --> Normalize
+```
+
+## Skills, content, KPIs, and destinations
+
+The vendored `third_party/marketingskills/` snapshot is immutable.
+`skill_overlays` stores tenant enablement, additional instructions, actor, and
+version. Runtime instructions compose upstream text, the overlay, and grounded
+workspace context. Draft generation has no external side effect and records the
+skill overlay version used.
+
+`kpi_definitions` stores reusable numerator/denominator semantics. Explorer
+queries accept only allow-listed metrics and dimensions. Saved query
+definitions can feed Google Sheets or the allow-listed FastSheets and
+FastInsights API hosts; every delivery is recorded in `export_runs`. FastOffice
+remains an honest stub until its repository exposes a token-gated artifact API.
+
+```mermaid
+flowchart LR
+    Upstream["Pinned SKILL.md"] --> Composer["Effective skill"]
+    Overlay[("skill_overlays")] --> Composer
+    Composer --> Draft["Content draft"]
+    Draft --> Review["Human review"]
+    Facts[("marketing_facts")] --> KPI["KPI definitions"]
+    KPI --> Explorer
+    Explorer --> Saved[("saved_queries")]
+    Saved --> Export["Export service"]
+    Export --> Sheets["Google Sheets"]
+    Export --> FastSME["FastSheets / FastInsights"]
+```
+
+The token-gated `/api/mcp` JSON-RPC gateway exposes KPI and funnel reads plus
+an activation-proposal tool. The activation tool can propose publication,
+conversion upload, or audience synchronization, but it cannot execute them;
+the normal approval and worker sequence remains mandatory.
 
 ## Configurable funnel and Sankey calculation
 
@@ -360,14 +429,14 @@ stateDiagram-v2
 Each `job_queue` row stores company scope, job type, payload, idempotency key,
 status, attempt count, maximum attempts, availability time, lock time,
 completion time, and last error. The current worker handles
-`sync.google_ads`; unknown kinds fail visibly and unfinished behavior must not
-appear live.
+`sync.google_ads`, `sync.ga4`, `sync.hubspot`, `sync.brevo`, and
+`action.execute`; unknown kinds fail visibly.
 
 The worker lifecycle is:
 
 1. select one eligible pending job and transition it to `running`;
 2. increment its attempt count and record `locked_at`;
-3. execute the `sync.google_ads` handler outside the claim transaction;
+3. execute the typed sync or governed-action handler outside the claim transaction;
 4. transition it to `succeeded` and store `finished_at`; or
 5. store `last_error` and return it to `pending` while attempts remain,
    otherwise transition it to `failed`.
@@ -382,7 +451,10 @@ The following names match the current SQLite schema.
 | `companies` | Current workspace/client scope, timezone, currency, and profile. |
 | `users`, `memberships` | Actor identity and organization role. |
 | `integration_connections` | Provider, capability, honest state, account binding, secret reference; never raw credentials. |
+| `platform_accounts`, `data_sources` | Provider account hierarchy and tenant source configuration. |
+| `sync_cursors`, `raw_extracts` | Incremental watermarks and immutable replay input. |
 | `sync_runs` | Source, requested window, status, counts, freshness, cursor, and error. |
+| `crm_entities` | HubSpot/Brevo contacts, lifecycle stages, and revenue properties. |
 | `campaigns` | Normalized campaign identity and provider metadata. |
 | `marketing_facts` | Long-form daily metrics with currency and typed dimensions. |
 | `journey_entities` | Dated, campaign-attributed cohort entities with their highest reached stage. |
@@ -390,11 +462,16 @@ The following names match the current SQLite schema.
 | `funnel_stages` | Ordered labels and JSON predicates belonging to a funnel definition. |
 | `job_queue` | Durable background work, idempotency key, attempts, timing, lock, and last error. |
 | `approvals` | Exact canonical payload and hash, requester/decider, status, and expiry. |
+| `action_requests`, `action_executions` | Governed mutation, durable idempotency, attempts, and receipts. |
+| `skill_overlays` | Tenant skill enablement and versioned instructions. |
+| `kpi_definitions`, `saved_queries` | Semantic KPIs and reusable explorer definitions. |
+| `destination_connections`, `export_runs` | Export configuration, status, and delivery receipts. |
 | `audit_events` | Append-only actor, tenant, event, object, decision, and details. |
 
-The current mutation schema already has `approvals` and `audit_events`. Durable
-provider-action idempotency and attempt receipts are required before enabling a
-live write adapter; they are not represented as already-live tables here.
+The mutation schema implements `action_requests` and `action_executions` in
+addition to `approvals` and `audit_events`. Composio and Arcade execute only
+from the worker after membership, exact-payload approval, tenant identity, and
+prior-success checks pass.
 
 Foreign keys are enabled for every SQLite connection. Migrations are monotonic
 and versioned. Database initialization never relies on a large mutable

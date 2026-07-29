@@ -9,11 +9,19 @@ from starlette.responses import JSONResponse, RedirectResponse
 
 from fastfunnel.agents import build_agency_graph
 from fastfunnel.config import ROOT, settings
+from fastfunnel.domain.actions import ActionService
+from fastfunnel.domain.analytics import BASE_METRICS, AnalyticsService
+from fastfunnel.domain.content import ContentService
 from fastfunnel.domain.marketing import MarketingService
 from fastfunnel.domain.store import store
-from fastfunnel.integrations import CATEGORIES, all_integrations, get_integration
+from fastfunnel.integrations import (
+    CATEGORIES,
+    all_integrations,
+    get_integration,
+    runtime_readiness,
+)
 from fastfunnel.integrations.postmark import PostmarkInvitations
-from fastfunnel.skills import discover_skills, upstream
+from fastfunnel.skills import discover_skills, save_overlay, skill_for_company, upstream
 from fastfunnel.web import account_auth, google_auth
 from fastfunnel.web.api import api
 from fastfunnel.web.developer import developer_page
@@ -71,6 +79,12 @@ def health_check():
 
 def metric(label: str, value: str, note: str):
     return Div(Small(label), Strong(value), Span(note, cls="delta"), cls="card metric")
+
+
+def tenant_context(sess) -> tuple[dict, dict]:
+    user = store.user_for_email(sess.get("user_email"))
+    company = store.company_for_user(user["email"])
+    return company, user
 
 
 @rt("/", methods=["GET"])
@@ -238,11 +252,44 @@ def agency_view():
 
 
 @rt("/content", methods=["GET"])
-def content_view():
-    items = store.list_content()
+def content_view(sess):
+    company, _ = tenant_context(sess)
+    items = store.list_content(company["id"])
     return shell(
         "Ideas & content",
         Div(
+            Div(
+                H2("Generate from Marketing Skills"),
+                Form(
+                    Label(
+                        "Goal",
+                        Input(
+                            name="goal",
+                            required=True,
+                            placeholder="Explain how governed AI platforms reduce delivery risk",
+                        ),
+                    ),
+                    Label(
+                        "Channel",
+                        Select(
+                            Option("LinkedIn", value="linkedin"),
+                            Option("Instagram", value="instagram"),
+                            Option("Facebook", value="facebook"),
+                            Option("X", value="x"),
+                            name="channel",
+                        ),
+                    ),
+                    Button("Generate review draft", type="submit"),
+                    method="post",
+                    action="/content/generate",
+                    cls="stack",
+                ),
+                P(
+                    "Uses the immutable upstream Social skill plus your editable workspace overlay.",
+                    cls="muted",
+                ),
+                cls="card",
+            ),
             Div(
                 H2("Create a channel-ready draft"),
                 Form(
@@ -295,14 +342,43 @@ def content_view():
 
 
 @rt("/content", methods=["POST"])
-def create_content(title: str, body: str, channel: str):
-    store.create_content(title.strip(), body.strip(), channel)
+def create_content(sess, title: str, body: str, channel: str):
+    company, user = tenant_context(sess)
+    store.create_content(
+        title.strip(),
+        body.strip(),
+        channel,
+        company_id=company["id"],
+        actor_id=user["id"],
+    )
+    return RedirectResponse("/review", status_code=303)
+
+
+@rt("/content/generate", methods=["POST"])
+def generate_content(sess, goal: str, channel: str):
+    company, user = tenant_context(sess)
+    ContentService(store).create_draft(
+        company_id=company["id"],
+        actor_id=user["id"],
+        goal=goal,
+        channel=channel,
+    )
     return RedirectResponse("/review", status_code=303)
 
 
 @rt("/review", methods=["GET"])
-def review_view():
-    items = [item for item in store.list_content() if item["status"] == "review"]
+def review_view(sess):
+    company, _ = tenant_context(sess)
+    items = [
+        item for item in store.list_content(company["id"]) if item["status"] == "review"
+    ]
+    with store.connect() as conn:
+        actions = conn.execute(
+            """SELECT * FROM action_requests
+               WHERE company_id=? AND status='awaiting_approval'
+               ORDER BY created_at DESC""",
+            (company["id"],),
+        ).fetchall()
     rows = [
         Tr(
             Td(status_badge(item["status"])),
@@ -332,21 +408,57 @@ def review_view():
             else Div("Nothing is waiting for review.", cls="empty"),
             cls="card",
         ),
+        Div(
+            H2("External action approvals"),
+            P("Approval is bound to the exact payload hash shown in the audit log."),
+            Table(
+                Thead(Tr(Th("Action"), Th("Provider"), Th("Risk"), Th("Decision"))),
+                Tbody(
+                    *[
+                        Tr(
+                            Td(action["action_type"]),
+                            Td(action["provider"]),
+                            Td(status_badge(action["risk"])),
+                            Td(
+                                Form(
+                                    Button("Approve exact payload", type="submit"),
+                                    method="post",
+                                    action=f"/actions/{action['id']}/approve",
+                                )
+                            ),
+                        )
+                        for action in actions
+                    ]
+                ),
+                cls="table",
+            )
+            if actions
+            else Div("No external mutations are awaiting approval.", cls="empty"),
+            cls="card",
+        ),
         active="/review",
     )
 
 
 @rt("/review/{item_id}/approve", methods=["POST"])
-def approve_content(item_id: str):
-    store.approve_content(item_id)
+def approve_content(sess, item_id: str):
+    company, user = tenant_context(sess)
+    store.approve_content(item_id, company_id=company["id"], reviewer_id=user["id"])
     scheduled = (datetime.now(UTC) + timedelta(days=1)).replace(microsecond=0).isoformat()
-    store.schedule_content(item_id, scheduled)
+    store.schedule_content(
+        item_id, scheduled, company_id=company["id"], actor_id=user["id"]
+    )
     return RedirectResponse("/calendar", status_code=303)
 
 
 @rt("/calendar", methods=["GET"])
-def calendar_view():
-    items = [item for item in store.list_content() if item["status"] in {"scheduled", "published"}]
+def calendar_view(sess):
+    company, _ = tenant_context(sess)
+    items = [
+        item
+        for item in store.list_content(company["id"])
+        if item["status"] in {"scheduled", "published"}
+    ]
     return shell(
         "Publishing calendar",
         Div(
@@ -359,6 +471,21 @@ def calendar_view():
                         H3(item["title"]),
                         P(item["body"]),
                         Small(f"{item['channel'].title()} · {item['scheduled_for']}"),
+                        Form(
+                            Select(
+                                Option("Arcade", value="arcade"),
+                                Option("Composio", value="composio"),
+                                name="provider",
+                            ),
+                            Button(
+                                "Request publication approval",
+                                type="submit",
+                                disabled=item["status"] == "published",
+                            ),
+                            method="post",
+                            action=f"/publish/{item['id']}/propose",
+                            cls="funnel-filter",
+                        ),
                         cls="card",
                     )
                     for item in items
@@ -369,6 +496,48 @@ def calendar_view():
         ),
         active="/calendar",
     )
+
+
+@rt("/publish/{item_id}/propose", methods=["POST"])
+def propose_publication(sess, item_id: str, provider: str):
+    company, user = tenant_context(sess)
+    if provider not in {"arcade", "composio"}:
+        return Response("Unsupported provider", status_code=422)
+    with store.connect() as conn:
+        item = conn.execute(
+            """SELECT * FROM content_items
+               WHERE id=? AND company_id=? AND status='scheduled'""",
+            (item_id, company["id"]),
+        ).fetchone()
+    if not item:
+        return Response("Scheduled content not found", status_code=404)
+    tools = {
+        ("arcade", "linkedin"): "LinkedIn.CreatePost",
+        ("arcade", "x"): "X.PostTweet",
+        ("composio", "linkedin"): "LINKEDIN_CREATE_POST",
+        ("composio", "x"): "TWITTER_CREATION_OF_A_POST",
+    }
+    tool = tools.get((provider, item["channel"]))
+    if not tool:
+        return Response("No governed tool mapping for this channel/provider", status_code=422)
+    ActionService(store).propose(
+        company_id=company["id"],
+        actor_id=user["id"],
+        action_type="content.publish",
+        provider=provider,
+        object_type="content",
+        object_id=item_id,
+        payload={"tool": tool, "text": item["body"]},
+        idempotency_key=f"publish:{item_id}:{item['updated_at']}:{provider}",
+    )
+    return RedirectResponse("/review", status_code=303)
+
+
+@rt("/actions/{request_id}/approve", methods=["POST"])
+def approve_action(sess, request_id: str):
+    _, user = tenant_context(sess)
+    ActionService(store).approve(request_id, reviewer_id=user["id"])
+    return RedirectResponse("/review", status_code=303)
 
 
 @rt("/campaigns", methods=["GET"])
@@ -399,8 +568,9 @@ def campaigns_view():
 
 
 @rt("/analytics", methods=["GET"])
-def analytics_view():
-    summary = MarketingService(store).analytics_summary()
+def analytics_view(sess):
+    company, _ = tenant_context(sess)
+    summary = MarketingService(store).analytics_summary(company["id"])
     metrics = summary["metrics"]
     spend = metrics.get("spend", 0)
     conversions = metrics.get("conversions", 0)
@@ -436,7 +606,11 @@ def analytics_view():
                     if latest
                     else P("No completed sync."),
                 ),
-                A("Open acquisition funnel", href="/analytics/funnel", cls="btn"),
+                Div(
+                    A("Explore KPIs", href="/analytics/explorer", cls="btn"),
+                    A("Open acquisition funnel", href="/analytics/funnel", cls="btn"),
+                    cls="top-actions",
+                ),
                 cls="hero",
             ),
             P(
@@ -451,9 +625,10 @@ def analytics_view():
 
 
 @rt("/analytics/funnel", methods=["GET"])
-def funnel_view(days: int = 30):
+def funnel_view(sess, days: int = 30):
+    company, _ = tenant_context(sess)
     days = max(1, min(int(days), 90))
-    result = MarketingService(store).funnel(days=days)
+    result = MarketingService(store).funnel(days=days, company_id=company["id"])
     definition = result["definition"]
     trace_json = json.dumps([result["trace"]])
     layout_json = json.dumps(
@@ -539,9 +714,81 @@ def funnel_view(days: int = 30):
     )
 
 
+@rt("/analytics/explorer", methods=["GET"])
+def explorer_view(sess, metric_name: str = "clicks", dimension: str = "fact_date"):
+    company, _ = tenant_context(sess)
+    if metric_name not in BASE_METRICS:
+        metric_name = "clicks"
+    if dimension not in {"fact_date", "provider", "campaign"}:
+        dimension = "fact_date"
+    analytics = AnalyticsService(store)
+    rows = analytics.explore(
+        company_id=company["id"], metric=metric_name, dimension=dimension
+    )
+    kpis = analytics.kpis(company["id"])
+    return shell(
+        "KPI explorer",
+        Div(
+            *[
+                metric(
+                    item["name"].upper(),
+                    (
+                        f"{item['value'] * 100:.2f}%"
+                        if item["format"] == "percent"
+                        else f"£{item['value']:,.2f}"
+                        if item["format"] == "currency"
+                        else f"{item['value']:,.2f}"
+                    ),
+                    f"{item['numerator_metric']} / {item['denominator_metric']}",
+                )
+                for item in kpis
+            ],
+            cls="grid metrics",
+        ),
+        Div(
+            Form(
+                Label(
+                    "Metric",
+                    Select(
+                        *[
+                            Option(name.replace("_", " ").title(), value=name,
+                                   selected=name == metric_name)
+                            for name in sorted(BASE_METRICS)
+                        ],
+                        name="metric_name",
+                    ),
+                ),
+                Label(
+                    "Dimension",
+                    Select(
+                        *[
+                            Option(name.replace("_", " ").title(), value=name,
+                                   selected=name == dimension)
+                            for name in ("fact_date", "provider", "campaign")
+                        ],
+                        name="dimension",
+                    ),
+                ),
+                Button("Run", type="submit"),
+                method="get",
+                action="/analytics/explorer",
+                cls="funnel-filter",
+            ),
+            Table(
+                Thead(Tr(Th(dimension.replace("_", " ").title()), Th(metric_name.title()))),
+                Tbody(*[Tr(Td(row["dimension"]), Td(f"{row['value']:,.2f}")) for row in rows]),
+                cls="table",
+            ),
+            cls="card",
+        ),
+        active="/analytics/explorer",
+    )
+
+
 @rt("/skills", methods=["GET"])
-def skills_view():
-    skills = discover_skills()
+def skills_view(sess):
+    company, _ = tenant_context(sess)
+    skills = discover_skills(store, company["id"])
     source = upstream()
     return shell(
         "Marketing skills",
@@ -574,8 +821,9 @@ def skills_view():
 
 
 @rt("/skills/{skill_id}", methods=["GET"])
-def skill_detail_view(skill_id: str):
-    skill = next((item for item in discover_skills() if item.id == skill_id), None)
+def skill_detail_view(sess, skill_id: str):
+    company, _ = tenant_context(sess)
+    skill = skill_for_company(store, company["id"], skill_id)
     if not skill:
         return Response("Skill not found", status_code=404)
     excerpt = skill.path.read_text(errors="replace")[:1400] if skill.path.exists() else ""
@@ -587,11 +835,48 @@ def skill_detail_view(skill_id: str):
             P(skill.summary),
             H3("Bundled instructions"),
             Pre(excerpt),
-            P("External side effects remain disabled until governed tools are connected.", cls="muted"),
+            H3("Workspace overlay"),
+            Form(
+                Label(
+                    "Additional instructions",
+                    Textarea(
+                        skill.overlay_instructions,
+                        name="instructions",
+                        rows="12",
+                        placeholder="Add brand voice, audience, exclusions, and workflow rules…",
+                    ),
+                ),
+                Label(
+                    Input(type="checkbox", name="enabled", value="1", checked=skill.enabled),
+                    " Enabled for this workspace",
+                ),
+                Button("Save workspace overlay", type="submit"),
+                method="post",
+                action=f"/skills/{skill.id}",
+                cls="stack",
+            ),
+            P(
+                "Upstream instructions remain immutable; this tenant-scoped overlay is versioned.",
+                cls="muted",
+            ),
             cls="card",
         ),
         active="/skills",
     )
+
+
+@rt("/skills/{skill_id}", methods=["POST"])
+def update_skill_overlay(sess, skill_id: str, instructions: str = "", enabled: str = ""):
+    company, user = tenant_context(sess)
+    save_overlay(
+        store,
+        company["id"],
+        skill_id,
+        instructions,
+        enabled=enabled == "1",
+        actor_id=user["id"],
+    )
+    return RedirectResponse(f"/skills/{skill_id}", status_code=303)
 
 
 @rt("/integrations", methods=["GET"])
@@ -637,16 +922,18 @@ def integrations_view():
 
 
 @rt("/integrations/{integration_id}", methods=["GET"])
-def integration_detail_view(integration_id: str):
+def integration_detail_view(sess, integration_id: str):
+    company, user = tenant_context(sess)
     item = get_integration(integration_id)
     if not item:
         return Response("Integration not found", status_code=404)
-    is_stub = item.status == "stub"
+    runtime_status, runtime_reason = runtime_readiness(integration_id)
+    is_stub = runtime_status == "stub"
     return shell(
         item.name,
         Div(
             Div(
-                status_badge(item.status),
+                status_badge(runtime_status),
                 H2(item.name),
                 P(item.description),
                 H3("Provider routes"),
@@ -657,14 +944,47 @@ def integration_detail_view(integration_id: str):
             ),
             Div(
                 H2("Setup"),
-                P(
-                    "This connector is a visible implementation stub. Required scopes, "
-                    "credentials and health checks will appear here."
-                    if is_stub
-                    else "The adapter contract is available. Live credentials are not configured."
+                P(runtime_reason),
+                (
+                    Form(
+                        Label(
+                            "Provider user ID",
+                            Input(
+                                name="external_user_id",
+                                value=f"{company['id']}:{user['id']}",
+                                required=True,
+                            ),
+                        ),
+                        Label(
+                            "Connected account reference",
+                            Input(
+                                name="connected_account_id",
+                                placeholder="Returned by hosted provider authorization",
+                                required=True,
+                            ),
+                        ),
+                        Button("Save delegated account", type="submit"),
+                        method="post",
+                        action=f"/integrations/{integration_id}/identity",
+                        cls="stack",
+                    )
+                    if integration_id in {"composio", "arcade"}
+                    and runtime_status == "connected"
+                    else Form(
+                        Input(type="hidden", name="mode", value="synthetic"),
+                        Button("Run synthetic contract sync", type="submit"),
+                        method="post",
+                        action=f"/integrations/{integration_id}/sync",
+                    )
+                    if integration_id in {"hubspot", "brevo", "ga4"}
+                    else ""
                 ),
                 Button(
-                    "Not implemented" if is_stub else "Configure later",
+                    "Not implemented"
+                    if is_stub
+                    else "Connected"
+                    if runtime_status == "connected"
+                    else "Credentials required",
                     type="button",
                     disabled=True,
                 ),
@@ -674,6 +994,80 @@ def integration_detail_view(integration_id: str):
         ),
         active=f"/integrations/{integration_id}",
     )
+
+
+@rt("/integrations/{integration_id}/identity", methods=["POST"])
+def save_provider_identity(
+    sess,
+    integration_id: str,
+    external_user_id: str,
+    connected_account_id: str,
+):
+    if integration_id not in {"composio", "arcade"}:
+        return Response("Unsupported delegated provider", status_code=422)
+    if runtime_readiness(integration_id)[0] != "connected":
+        return Response("Provider API key is not configured", status_code=503)
+    company, user = tenant_context(sess)
+    timestamp = datetime.now(UTC).isoformat()
+    with store.connect() as conn:
+        conn.execute(
+            """INSERT INTO provider_identities
+               (id, company_id, user_id, provider, external_user_id,
+                connected_account_id, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'connected', ?, ?)
+               ON CONFLICT(company_id, user_id, provider) DO UPDATE SET
+                 external_user_id=excluded.external_user_id,
+                 connected_account_id=excluded.connected_account_id,
+                 status='connected', updated_at=excluded.updated_at""",
+            (
+                f"pid_{company['id']}_{user['id']}_{integration_id}",
+                company["id"],
+                user["id"],
+                integration_id,
+                external_user_id.strip(),
+                connected_account_id.strip(),
+                timestamp,
+                timestamp,
+            ),
+        )
+        store._audit(
+            conn,
+            company["organization_id"],
+            company["id"],
+            user["id"],
+            "provider.identity.connected",
+            "integration",
+            integration_id,
+            {"external_user_id": external_user_id.strip()},
+        )
+    return RedirectResponse(f"/integrations/{integration_id}", status_code=303)
+
+
+@rt("/integrations/{integration_id}/sync", methods=["POST"])
+def enqueue_source_sync(sess, integration_id: str, mode: str = "synthetic"):
+    company, _ = tenant_context(sess)
+    if integration_id not in {"hubspot", "brevo", "ga4"}:
+        return Response("Unsupported source", status_code=422)
+    if mode not in {"synthetic", "live"}:
+        return Response("Unsupported mode", status_code=422)
+    timestamp = datetime.now(UTC).isoformat()
+    with store.connect() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO job_queue
+               (id, company_id, job_type, payload_json, idempotency_key,
+                status, available_at, created_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)""",
+            (
+                f"job_{integration_id}_{datetime.now(UTC).timestamp()}",
+                company["id"],
+                f"sync.{integration_id}",
+                json.dumps({"mode": mode, "lookback_days": 30}),
+                f"sync:{integration_id}:{mode}:{datetime.now(UTC).date()}",
+                timestamp,
+                timestamp,
+            ),
+        )
+    return RedirectResponse(f"/integrations/{integration_id}", status_code=303)
 
 
 @rt("/team", methods=["GET"])

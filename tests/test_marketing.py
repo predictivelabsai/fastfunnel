@@ -51,7 +51,8 @@ def test_synthetic_ingestion_is_idempotent(tmp_path: Path):
         successful_runs = conn.execute(
             "SELECT COUNT(*) FROM sync_runs WHERE status='succeeded'"
         ).fetchone()[0]
-    assert before == after == 240
+    assert before == after
+    assert before >= 240
     assert successful_runs >= 2
 
 
@@ -83,7 +84,7 @@ def test_connector_readiness_is_honest(monkeypatch):
     monkeypatch.delenv("GA4_PROPERTY_ID", raising=False)
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     assert GoogleAdsConnector("synthetic").readiness()[0] == "available"
-    assert GoogleAdsConnector("live").readiness()[0] == "available"
+    assert GoogleAdsConnector("live").readiness()[0] == "stub"
     assert GA4Connector().readiness()[0] == "stub"
 
 

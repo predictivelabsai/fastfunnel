@@ -18,8 +18,12 @@ def test_all_upstream_skills_are_discovered():
 def test_integration_catalog_contains_launch_and_stub_channels():
     assert len(all_integrations()) >= 30
     assert get_integration("google-ads").status == "available"
-    assert get_integration("facebook-instagram").status == "available"
-    assert get_integration("x").status == "available"
+    assert get_integration("facebook-instagram").status == "stub"
+    assert get_integration("x").status == "stub"
+    assert get_integration("hubspot").status == "available"
+    assert get_integration("brevo").status == "available"
+    assert get_integration("composio").status == "available"
+    assert get_integration("arcade").status == "available"
     assert get_integration("bluesky").status == "stub"
     assert get_integration("mastodon").status == "stub"
     assert get_integration("ga4").status == "stub"
