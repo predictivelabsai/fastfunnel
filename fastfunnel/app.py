@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import os
+from datetime import UTC, datetime, timedelta
 
 from fasthtml.common import *
 from starlette.responses import RedirectResponse
@@ -12,15 +12,15 @@ from fastfunnel.domain.store import store
 from fastfunnel.integrations import CATEGORIES, all_integrations, get_integration
 from fastfunnel.integrations.postmark import PostmarkInvitations
 from fastfunnel.skills import discover_skills, upstream
-from fastfunnel.web.ui import integration_group_counts, shell, status_badge
+from fastfunnel.web import account_auth, google_auth
 from fastfunnel.web.landing import landing_page
-from fastfunnel.web import google_auth
+from fastfunnel.web.ui import integration_group_counts, shell, status_badge
 
 
 def auth_before(req, sess):
     if settings.dev_auth_bypass:
         return None
-    if req.url.path in {"/", "/healthz", "/auth/google", "/auth/google/callback"}:
+    if req.url.path in {"/", "/healthz"} or req.url.path.startswith("/auth/"):
         return None
     if not sess.get("user_email"):
         return RedirectResponse("/", status_code=303)
@@ -40,6 +40,9 @@ app, rt = fast_app(
     )
 )
 store.initialize()
+account_auth.register_fasthtml_routes(
+    rt, app_name="FastFunnel", session_key="user_email", success_path="/"
+)
 
 
 @rt("/healthz", methods=["GET"])
@@ -127,6 +130,7 @@ def google_callback(sess, request, code: str = "", state: str = "", error: str =
     identity = google_auth.exchange(request, code)
     if not identity:
         return RedirectResponse("/?error=Google+account+is+not+authorised", status_code=303)
+    account_auth.accounts.link_google(identity["email"], identity["name"])
     sess["user_email"] = identity["email"]
     return RedirectResponse("/", status_code=303)
 
