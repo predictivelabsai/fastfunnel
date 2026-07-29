@@ -20,7 +20,10 @@ from fastfunnel.web.ui import integration_group_counts, shell, status_badge
 def auth_before(req, sess):
     if settings.dev_auth_bypass:
         return None
-    if req.url.path in {"/", "/healthz"} or req.url.path.startswith("/auth/"):
+    if (
+        req.url.path in {"/", "/healthz"}
+        or req.url.path.startswith(("/auth/", "/static/"))
+    ):
         return None
     if not sess.get("user_email"):
         return RedirectResponse("/", status_code=303)
