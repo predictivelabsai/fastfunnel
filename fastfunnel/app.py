@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import os
 
 from fasthtml.common import *
 from starlette.responses import RedirectResponse
@@ -12,8 +13,21 @@ from fastfunnel.integrations import CATEGORIES, all_integrations, get_integratio
 from fastfunnel.integrations.postmark import PostmarkInvitations
 from fastfunnel.skills import discover_skills, upstream
 from fastfunnel.web.ui import integration_group_counts, shell, status_badge
+from fastfunnel.web.landing import landing_page
+from fastfunnel.web import google_auth
+
+
+def auth_before(req, sess):
+    if settings.dev_auth_bypass:
+        return None
+    if req.url.path in {"/", "/healthz", "/auth/google", "/auth/google/callback"}:
+        return None
+    if not sess.get("user_email"):
+        return RedirectResponse("/", status_code=303)
 
 app, rt = fast_app(
+    secret_key=os.getenv("FASTFUNNEL_SESSION_SECRET", "fastfunnel-change-me"),
+    before=Beforeware(auth_before),
     hdrs=(
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Link(rel="preconnect", href="https://fonts.googleapis.com"),
@@ -38,7 +52,9 @@ def metric(label: str, value: str, note: str):
 
 
 @rt("/", methods=["GET"])
-def dashboard_view():
+def dashboard_view(sess):
+    if not settings.dev_auth_bypass and not sess.get("user_email"):
+        return landing_page()
     data = store.dashboard()
     counts = data["counts"]
     return shell(
@@ -93,6 +109,26 @@ def dashboard_view():
         ),
         active="/",
     )
+
+
+@rt("/auth/google", methods=["GET"])
+def google_start(sess, request):
+    if not google_auth.enabled():
+        return RedirectResponse("/?error=Google+sign-in+is+not+configured", status_code=303)
+    state = google_auth.new_state()
+    sess["google_oauth_state"] = state
+    return RedirectResponse(google_auth.authorize_url(request, state), status_code=303)
+
+
+@rt("/auth/google/callback", methods=["GET"])
+def google_callback(sess, request, code: str = "", state: str = "", error: str = ""):
+    if error or not code or state != sess.pop("google_oauth_state", None):
+        return RedirectResponse("/?error=Google+sign-in+failed", status_code=303)
+    identity = google_auth.exchange(request, code)
+    if not identity:
+        return RedirectResponse("/?error=Google+account+is+not+authorised", status_code=303)
+    sess["user_email"] = identity["email"]
+    return RedirectResponse("/", status_code=303)
 
 
 @rt("/plan", methods=["GET"])
