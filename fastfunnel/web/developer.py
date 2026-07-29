@@ -51,7 +51,7 @@ def developer_content():
             ),
             Div(
                 Strong("Public preview access. "),
-                "GET endpoints require no authentication. Writes return 503 until FASTSME_API_TOKEN is configured; enabled clients send Authorization: Bearer <token>.",
+                "Tenant data reads and writes return 503 until FASTSME_API_TOKEN is configured; enabled clients send Authorization: Bearer <token>.",
                 cls="dev-note",
             ),
             H3("Resources"),

@@ -242,8 +242,8 @@ bearer = HTTPBearer(
     auto_error=False,
     scheme_name="FastSME API token",
     description=(
-        "Selected writes require `Authorization: Bearer <token>`. "
-        "Reads are public. Set FASTSME_API_TOKEN to enable writes."
+        "Protected operations require `Authorization: Bearer <token>`. "
+        "The product API description states whether reads are public."
     ),
 )
 

@@ -1157,7 +1157,7 @@
     },
     "securitySchemes": {
       "FastSME API token": {
-        "description": "Selected writes require `Authorization: Bearer <token>`. Reads are public. Set FASTSME_API_TOKEN to enable writes.",
+        "description": "Protected operations require `Authorization: Bearer <token>`. The product API description states whether reads are public.",
         "scheme": "bearer",
         "type": "http"
       }
@@ -1168,7 +1168,7 @@
       "name": "FastSME",
       "url": "https://fastsme.com/"
     },
-    "description": "Open integration access to FastFunnel campaigns, content, analytics, and journeys.\n\n**Access model:** tenant data reads and writes require the configured bearer token.",
+    "description": "Tenant-protected integration access to campaigns, content, analytics, and journeys.\n\n**Access model:** tenant data reads and writes require the configured bearer token.",
     "license": {
       "name": "MIT"
     },

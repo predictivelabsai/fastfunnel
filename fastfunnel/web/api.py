@@ -35,7 +35,7 @@ RESOURCES = (
 backend = SQLiteBackend(settings.database_path, RESOURCES, initialize=store.initialize)
 api = create_sqlite_api(
     product="FastFunnel", version="1.0.0",
-    description="Open integration access to FastFunnel campaigns, content, analytics, and journeys.",
+    description="Tenant-protected integration access to campaigns, content, analytics, and journeys.",
     base_url="https://funnel.fastsme.com", backend=backend, resources=RESOURCES,
     public_reads=False,
 )

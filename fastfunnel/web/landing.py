@@ -62,7 +62,7 @@ def landing_page():
                             cls="lp-grid"), cls="lp-band"),
                 Section(Div(Span("Developers", cls="lp-kicker"),
                             H2("Build on FastFunnel."),
-                            P("Explore the public read API, typed schemas, examples, and token-gated integration writes.")),
+                            P("Explore the tenant-protected API, typed schemas, examples, and governed integration writes.")),
                         A("Read the API documentation →", href="/developers", cls="lp-primary"),
                         cls="lp-developers"),
             ),
