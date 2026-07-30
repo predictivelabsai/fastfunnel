@@ -6,6 +6,7 @@ import pytest
 from fastfunnel.domain.actions import ActionService
 from fastfunnel.domain.analytics import AnalyticsService
 from fastfunnel.domain.ingestion import IngestionService
+from fastfunnel.domain.marketing import MarketingService
 from fastfunnel.domain.store import Store, now_iso
 from fastfunnel.integrations.destinations import FastSMEDestination, GoogleSheetsDestination
 from fastfunnel.integrations.execution import (
@@ -227,6 +228,56 @@ def test_kpi_explorer_is_allow_listed_and_tenant_scoped(tmp_path: Path):
             metric="clicks); DROP TABLE users;--",
             dimension="provider",
         )
+
+
+def test_account_provisioning_seeds_an_isolated_working_product(tmp_path: Path):
+    store = Store(tmp_path / "tenants.sqlite3")
+    store.initialize()
+    demo_company_id = store.default_company_id()
+
+    company, user = store.ensure_user_workspace(
+        "new.owner@example.test", "New Owner"
+    )
+    repeated_company, repeated_user = store.ensure_user_workspace(
+        "NEW.OWNER@example.test", "Ignored Rename"
+    )
+    store.initialize()
+
+    assert company["id"] != demo_company_id
+    assert repeated_company["id"] == company["id"]
+    assert repeated_user["id"] == user["id"]
+    assert store.company_for_user(user["email"], company["id"])["id"] == company["id"]
+    with pytest.raises(LookupError):
+        store.company_for_user(user["email"], demo_company_id)
+
+    funnel = MarketingService(store).funnel(company_id=company["id"])
+    assert funnel["definition"]["company_id"] == company["id"]
+    assert len(funnel["stages"]) == 6
+    assert funnel["values"][0] > funnel["values"][-1] > 0
+    assert AnalyticsService(store).explore(
+        company_id=company["id"], metric="clicks", dimension="provider"
+    )
+
+    item_id = store.create_content(
+        "Tenant calendar item",
+        "This item must stay inside the new workspace.",
+        "linkedin",
+        company_id=company["id"],
+        actor_id=user["id"],
+    )
+    store.approve_content(
+        item_id, company_id=company["id"], reviewer_id=user["id"]
+    )
+    store.schedule_content(
+        item_id,
+        "2026-08-01T09:00:00+00:00",
+        company_id=company["id"],
+        actor_id=user["id"],
+    )
+    assert store.list_content(company["id"])[0]["status"] == "scheduled"
+    assert not store.list_content(demo_company_id)
+    assert store.dashboard(company["id"])["members"][0]["email"] == user["email"]
+    assert store.company_for_user(user["email"])["name"] == "New Owner Marketing"
 
 
 def test_api_reads_are_not_public():

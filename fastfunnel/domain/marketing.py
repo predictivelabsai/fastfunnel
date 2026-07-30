@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from datetime import UTC, datetime, timedelta
@@ -27,16 +28,46 @@ class MarketingService:
 
     def seed(self) -> None:
         with self.store.connect() as conn:
-            company = conn.execute("SELECT * FROM companies LIMIT 1").fetchone()
+            company_ids = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM companies ORDER BY created_at"
+                ).fetchall()
+            ]
+        for company_id in company_ids:
+            self.seed_company(company_id)
+
+    @staticmethod
+    def _tenant_token(company_id: str) -> str:
+        return hashlib.sha256(company_id.encode()).hexdigest()[:12]
+
+    @classmethod
+    def default_funnel_id(cls, company_id: str) -> str:
+        if company_id == "co_predictivelabs":
+            return DEFAULT_FUNNEL_ID
+        return f"{DEFAULT_FUNNEL_ID}_{cls._tenant_token(company_id)}"
+
+    @classmethod
+    def _scoped_id(cls, prefix: str, company_id: str) -> str:
+        if company_id == "co_predictivelabs":
+            return prefix
+        return f"{prefix}_{cls._tenant_token(company_id)}"
+
+    def seed_company(self, company_id: str) -> None:
+        funnel_id = self.default_funnel_id(company_id)
+        with self.store.connect() as conn:
+            company = conn.execute(
+                "SELECT * FROM companies WHERE id=?", (company_id,)
+            ).fetchone()
             if not company:
-                return
+                raise LookupError("Unknown company")
             created = now_iso()
             conn.execute(
                 """INSERT OR IGNORE INTO integration_connections
                    (id, company_id, provider, mode, status, capabilities_json, created_at)
                    VALUES (?, ?, 'google-ads', 'synthetic', 'available', ?, ?)""",
                 (
-                    "conn_google_ads_synthetic",
+                    self._scoped_id("conn_google_ads_synthetic", company_id),
                     company["id"],
                     json.dumps(["campaigns.read", "performance.read"]),
                     created,
@@ -55,7 +86,10 @@ class MarketingService:
                        (id, company_id, provider, mode, status, capabilities_json, created_at)
                        VALUES (?, ?, ?, 'credentials-required', 'available', ?, ?)""",
                     (
-                        f"conn_{provider.replace('-', '_')}_pending",
+                        self._scoped_id(
+                            f"conn_{provider.replace('-', '_')}_pending",
+                            company_id,
+                        ),
                         company["id"],
                         provider,
                         json.dumps(capabilities),
@@ -67,7 +101,7 @@ class MarketingService:
                    (id, company_id, provider, mode, status, capabilities_json, created_at)
                    VALUES (?, ?, 'ga4', 'credentials-required', 'stub', ?, ?)""",
                 (
-                    "conn_ga4_pending",
+                    self._scoped_id("conn_ga4_pending", company_id),
                     company["id"],
                     json.dumps(["analytics.read"]),
                     created,
@@ -79,7 +113,7 @@ class MarketingService:
                     observation_window_days, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, 1, 30, ?, ?)""",
                 (
-                    DEFAULT_FUNNEL_ID,
+                    funnel_id,
                     company["id"],
                     "Digital marketing acquisition",
                     "digital-marketing-acquisition",
@@ -88,14 +122,19 @@ class MarketingService:
                     created,
                 ),
             )
+            funnel_id = conn.execute(
+                """SELECT id FROM funnel_definitions
+                   WHERE company_id=? AND slug='digital-marketing-acquisition'""",
+                (company_id,),
+            ).fetchone()["id"]
             for position, (name, short, dropoff, predicate) in enumerate(DEFAULT_STAGES):
                 conn.execute(
                     """INSERT OR IGNORE INTO funnel_stages
                        (id, funnel_id, position, name, short_name, dropoff_name, predicate_json)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        f"fst_digital_{position}",
-                        DEFAULT_FUNNEL_ID,
+                        self._scoped_id(f"fst_digital_{position}", company_id),
+                        funnel_id,
                         position,
                         name,
                         short,
@@ -109,7 +148,14 @@ class MarketingService:
             if not existing:
                 self._seed_journeys(conn, company["id"])
 
-        self.sync_google_ads()
+        with self.store.connect() as conn:
+            has_google_ads = conn.execute(
+                """SELECT 1 FROM marketing_facts
+                   WHERE company_id=? AND provider='google-ads' LIMIT 1""",
+                (company_id,),
+            ).fetchone()
+        if not has_google_ads:
+            self.sync_google_ads(company_id)
         from fastfunnel.domain.analytics import AnalyticsService
         from fastfunnel.domain.ingestion import IngestionService
         from fastfunnel.integrations.sources import (
@@ -119,13 +165,19 @@ class MarketingService:
         )
 
         ingestion = IngestionService(self.store)
-        company_id = self.store.default_company_id()
         for connector in (
             HubSpotConnector("synthetic"),
             BrevoConnector("synthetic"),
             GA4SourceConnector("synthetic"),
         ):
-            ingestion.sync(connector, company_id=company_id)
+            with self.store.connect() as conn:
+                has_source = conn.execute(
+                    """SELECT 1 FROM data_sources
+                       WHERE company_id=? AND provider=? LIMIT 1""",
+                    (company_id, connector.provider),
+                ).fetchone()
+            if not has_source:
+                ingestion.sync(connector, company_id=company_id)
         AnalyticsService(self.store).seed(company_id)
 
     @staticmethod
@@ -143,7 +195,7 @@ class MarketingService:
             campaign = "gads_search_ai" if index % 3 else "gads_retargeting"
             rows.append(
                 (
-                    f"jny_{index:05}",
+                    f"jny_{MarketingService._tenant_token(company_id)}_{index:05}",
                     company_id,
                     (today - timedelta(days=index % 30)).isoformat(),
                     "google-ads",
@@ -207,7 +259,10 @@ class MarketingService:
                            daily_budget=excluded.daily_budget, currency=excluded.currency,
                            last_seen_at=excluded.last_seen_at""",
                         (
-                            f"cmp_{campaign.external_id}",
+                            (
+                                f"cmp_{self._tenant_token(company_id)}_"
+                                f"{campaign.external_id}"
+                            ),
                             company["id"],
                             connector.provider,
                             campaign.external_id,
@@ -290,18 +345,29 @@ class MarketingService:
 
     def funnel(
         self,
-        funnel_id: str = DEFAULT_FUNNEL_ID,
+        funnel_id: str | None = None,
         days: int = 30,
         company_id: str | None = None,
     ) -> dict:
         company_id = company_id or self.store.default_company_id()
         with self.store.connect() as conn:
-            funnel = conn.execute(
-                "SELECT * FROM funnel_definitions WHERE id=? AND company_id=?",
-                (funnel_id, company_id),
-            ).fetchone()
+            if funnel_id:
+                funnel = conn.execute(
+                    "SELECT * FROM funnel_definitions WHERE id=? AND company_id=?",
+                    (funnel_id, company_id),
+                ).fetchone()
+            else:
+                funnel = conn.execute(
+                    """SELECT * FROM funnel_definitions
+                       WHERE company_id=?
+                       ORDER BY is_default DESC, created_at LIMIT 1""",
+                    (company_id,),
+                ).fetchone()
             if not funnel:
-                raise LookupError(f"Unknown funnel: {funnel_id}")
+                raise LookupError(
+                    f"Unknown funnel: {funnel_id or 'default for workspace'}"
+                )
+            funnel_id = funnel["id"]
             stage_rows = conn.execute(
                 "SELECT * FROM funnel_stages WHERE funnel_id=? ORDER BY position",
                 (funnel_id,),

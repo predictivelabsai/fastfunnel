@@ -209,7 +209,10 @@ class IngestionService:
                      source_updated_at=excluded.source_updated_at,
                      ingested_at=excluded.ingested_at""",
                 (
-                    f"crm_{provider}_{record.external_id}",
+                    (
+                        f"crm_{hashlib.sha256(company_id.encode()).hexdigest()[:12]}_"
+                        f"{provider}_{record.external_id}"
+                    ),
                     company_id,
                     provider,
                     record.external_id,

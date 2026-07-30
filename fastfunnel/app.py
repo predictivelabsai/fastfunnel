@@ -26,19 +26,23 @@ from fastfunnel.web import account_auth, google_auth
 from fastfunnel.web.api import api
 from fastfunnel.web.developer import developer_page
 from fastfunnel.web.landing import landing_page
-from fastfunnel.web.ui import integration_group_counts, shell, status_badge
+from fastfunnel.web.ui import (
+    integration_group_counts,
+    set_shell_identity,
+    shell,
+    status_badge,
+)
 
 
 def auth_before(req, sess):
-    if settings.dev_auth_bypass:
-        return None
     if (
         req.url.path in {"/", "/api", "/healthz", "/developers", "/swagger.json"}
         or req.url.path.startswith(("/api/", "/auth/", "/static/"))
     ):
         return None
-    if not sess.get("user_email"):
+    if not settings.dev_auth_bypass and not sess.get("user_email"):
         return RedirectResponse("/", status_code=303)
+    tenant_context(sess)
 
 app, rt = fast_app(
     secret_key=os.getenv("FASTFUNNEL_SESSION_SECRET", "fastfunnel-change-me"),
@@ -57,8 +61,23 @@ app, rt = fast_app(
 )
 app.mount("/api", api)
 store.initialize()
+
+
+def establish_product_session(sess, account: dict) -> tuple[dict, dict]:
+    company, user = store.ensure_user_workspace(
+        account["email"], account.get("name") or account.get("display_name")
+    )
+    sess["user_email"] = user["email"]
+    sess["company_id"] = company["id"]
+    set_shell_identity(company, user)
+    return company, user
+
+
 account_auth.register_fasthtml_routes(
-    rt, app_name="FastFunnel", session_key="user_email", success_path="/"
+    rt,
+    app_name="FastFunnel",
+    success_path="/",
+    on_login=establish_product_session,
 )
 
 
@@ -82,8 +101,17 @@ def metric(label: str, value: str, note: str):
 
 
 def tenant_context(sess) -> tuple[dict, dict]:
-    user = store.user_for_email(sess.get("user_email"))
-    company = store.company_for_user(user["email"])
+    email = sess.get("user_email")
+    if not email and settings.dev_auth_bypass:
+        email = settings.admin_email
+    try:
+        user = store.user_for_email(email)
+        company = store.company_for_user(user["email"], sess.get("company_id"))
+    except LookupError:
+        company, user = store.ensure_user_workspace(email)
+    sess["user_email"] = user["email"]
+    sess["company_id"] = company["id"]
+    set_shell_identity(company, user)
     return company, user
 
 
@@ -91,10 +119,11 @@ def tenant_context(sess) -> tuple[dict, dict]:
 def dashboard_view(sess):
     if not settings.dev_auth_bypass and not sess.get("user_email"):
         return landing_page()
-    data = store.dashboard()
+    company, _ = tenant_context(sess)
+    data = store.dashboard(company["id"])
     counts = data["counts"]
     return shell(
-        "Good morning, Predictive Labs",
+        f"Good morning, {company['name']}",
         Section(
             Div(
                 H2("Your autonomous agency is ready to build demand."),
@@ -163,8 +192,8 @@ def google_callback(sess, request, code: str = "", state: str = "", error: str =
     identity = google_auth.exchange(request, code)
     if not identity:
         return RedirectResponse("/?error=Google+account+is+not+authorised", status_code=303)
-    account_auth.accounts.link_google(identity["email"], identity["name"])
-    sess["user_email"] = identity["email"]
+    account = account_auth.accounts.link_google(identity["email"], identity["name"])
+    establish_product_session(sess, account)
     return RedirectResponse("/", status_code=303)
 
 
@@ -1071,8 +1100,9 @@ def enqueue_source_sync(sess, integration_id: str, mode: str = "synthetic"):
 
 
 @rt("/team", methods=["GET"])
-def team_view():
-    data = store.dashboard()
+def team_view(sess):
+    company, _ = tenant_context(sess)
+    data = store.dashboard(company["id"])
     return shell(
         "Team & invites",
         Div(
@@ -1126,12 +1156,18 @@ def team_view():
 
 
 @rt("/team/invite", methods=["POST"])
-def invite_team_member(email: str, role: str):
-    _, token = store.invite(email, role)
+def invite_team_member(sess, email: str, role: str):
+    company, user = tenant_context(sess)
+    _, token = store.invite(
+        email,
+        role,
+        company_id=company["id"],
+        actor_id=user["id"],
+    )
     PostmarkInvitations().send(
         email,
         f"{settings.base_url}/invites/accept?token={token}",
-        settings.seed_company,
+        company["name"],
     )
     return RedirectResponse("/team", status_code=303)
 

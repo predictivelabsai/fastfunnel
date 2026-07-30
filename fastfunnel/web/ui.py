@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 from fasthtml.common import *
 
 from fastfunnel.integrations import CATEGORIES, all_integrations
+
+_shell_identity: ContextVar[tuple[dict, dict] | None] = ContextVar(
+    "fastfunnel_shell_identity", default=None
+)
+
+
+def set_shell_identity(company: dict, user: dict) -> None:
+    _shell_identity.set((company, user))
 
 
 def icon(name: str) -> Span:
@@ -65,12 +75,16 @@ def sidebar(active: str = "/") -> Aside:
     )
 
 
-def topbar(title: str, eyebrow: str = "PREDICTIVE LABS · AI-FIRST CONSULTANCY") -> Header:
+def topbar(
+    title: str,
+    eyebrow: str = "DIGITAL MARKETING WORKSPACE",
+    user_email: str = "",
+) -> Header:
     return Header(
         Div(Small(eyebrow, cls="eyebrow"), H1(title)),
         Div(
             Span("Bounded autonomy", cls="pill success"),
-            Span("admin@fastfunnel.app", cls="user-pill"),
+            Span(user_email, cls="user-pill") if user_email else "",
             cls="top-actions",
         ),
         cls="topbar",
@@ -78,22 +92,36 @@ def topbar(title: str, eyebrow: str = "PREDICTIVE LABS · AI-FIRST CONSULTANCY")
 
 
 def shell(title: str, *content, active: str = "/", rail=None):
+    identity = _shell_identity.get()
+    company, user = identity if identity else ({}, {})
+    company_name = company.get("name", "FastFunnel")
     return (
         Title(f"{title} · FastFunnel"),
         Div(
             sidebar(active),
-            Main(topbar(title), Div(*content, cls="page-content"), cls="main"),
-            rail or assistant_rail(),
+            Main(
+                topbar(
+                    title,
+                    f"{company_name.upper()} · DIGITAL MARKETING",
+                    user.get("email", ""),
+                ),
+                Div(*content, cls="page-content"),
+                cls="main",
+            ),
+            rail or assistant_rail(company_name),
             cls="app-shell",
         ),
     )
 
 
-def assistant_rail():
+def assistant_rail(company_name: str = "your workspace"):
     return Aside(
         Div(Span("✦", cls="spark"), Div(Strong("Agency copilot"), Small("LangGraph swarm")), cls="rail-head"),
         Div(
-            P("I can draft, review, distribute and measure—within Predictive Labs' approval policy."),
+            P(
+                "I can draft, review, distribute and measure—within "
+                f"{company_name}'s approval policy."
+            ),
             Div(Strong("Current guardrail"), P("Publishing is bounded. Spend changes require admin approval."), cls="rail-card"),
             Div(Strong("Suggested"), P("Create a LinkedIn post about building auditable AI platforms."), cls="rail-card accent"),
             cls="rail-body",

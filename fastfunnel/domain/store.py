@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 from collections.abc import Iterator
@@ -159,7 +160,19 @@ class Store:
         """Resolve a company only through an explicit tenant or user membership."""
         with self.connect() as conn:
             if company_id:
-                row = conn.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
+                if email:
+                    row = conn.execute(
+                        """SELECT companies.* FROM companies
+                           JOIN memberships
+                             ON memberships.organization_id=companies.organization_id
+                           JOIN users ON users.id=memberships.user_id
+                           WHERE companies.id=? AND lower(users.email)=lower(?)""",
+                        (company_id, email),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT * FROM companies WHERE id=?", (company_id,)
+                    ).fetchone()
             elif email:
                 row = conn.execute(
                     """SELECT companies.* FROM companies
@@ -177,6 +190,96 @@ class Store:
             raise LookupError("No authorized company workspace")
         return dict(row)
 
+    def ensure_user_workspace(
+        self,
+        email: str,
+        display_name: str | None = None,
+    ) -> tuple[dict, dict]:
+        """Idempotently provision an isolated product workspace for an auth account."""
+        normalized_email = (email or "").strip().lower()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized_email):
+            raise ValueError("A valid account email is required")
+        display_name = (display_name or "").strip()[:120]
+        local_part, domain = normalized_email.rsplit("@", 1)
+        fallback_name = re.sub(r"[._+-]+", " ", local_part).strip().title()
+        display_name = display_name or fallback_name or "Workspace Admin"
+        token = hashlib.sha256(normalized_email.encode()).hexdigest()[:16]
+        user_id = f"usr_{token}"
+        organization_id = f"org_{token}"
+        company_id = f"co_{token}"
+        slug_base = re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-")
+        slug = f"{slug_base or 'workspace'}-{token[:8]}"
+        created = now_iso()
+
+        with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM users WHERE lower(email)=lower(?)",
+                (normalized_email,),
+            ).fetchone()
+            if existing:
+                membership = conn.execute(
+                    """SELECT companies.* FROM companies
+                       JOIN memberships
+                         ON memberships.organization_id=companies.organization_id
+                       WHERE memberships.user_id=?
+                       ORDER BY companies.created_at LIMIT 1""",
+                    (existing["id"],),
+                ).fetchone()
+                if membership:
+                    return dict(membership), dict(existing)
+                user_id = existing["id"]
+            else:
+                conn.execute(
+                    "INSERT INTO users VALUES (?, ?, ?, ?)",
+                    (user_id, normalized_email, display_name, created),
+                )
+
+            conn.execute(
+                "INSERT OR IGNORE INTO organizations VALUES (?, ?, ?, ?)",
+                (organization_id, f"{display_name} Workspace", slug, created),
+            )
+            profile = {
+                "website": f"https://{domain}",
+                "industry": "Digital marketing",
+                "market": "Global",
+                "approval_policy": "bounded_autonomy_admin_approval",
+                "provisioned": "self_service",
+            }
+            conn.execute(
+                """INSERT OR IGNORE INTO companies
+                   (id, organization_id, name, domain, profile_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    company_id,
+                    organization_id,
+                    f"{display_name} Marketing",
+                    domain,
+                    json.dumps(profile),
+                    created,
+                ),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO memberships VALUES (?, ?, 'admin')",
+                (organization_id, user_id),
+            )
+            self._audit(
+                conn,
+                organization_id,
+                company_id,
+                user_id,
+                "workspace.provisioned",
+                "company",
+                company_id,
+                {"source": "account_auth", "email_domain": domain},
+            )
+
+        from fastfunnel.domain.marketing import MarketingService
+
+        MarketingService(self).seed_company(company_id)
+        return self.company_for_user(normalized_email, company_id), self.user_for_email(
+            normalized_email
+        )
+
     def user_for_email(self, email: str | None = None) -> dict:
         with self.connect() as conn:
             if email:
@@ -192,9 +295,29 @@ class Store:
     @staticmethod
     def _refresh_demo_identity(conn: sqlite3.Connection) -> None:
         """Keep existing local demo databases aligned with the public demo identity."""
-        organization = conn.execute("SELECT id FROM organizations LIMIT 1").fetchone()
-        company = conn.execute("SELECT id FROM companies LIMIT 1").fetchone()
-        admin = conn.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
+        admin = conn.execute(
+            "SELECT id FROM users WHERE lower(email)=lower(?)",
+            (settings.admin_email,),
+        ).fetchone()
+        if not admin:
+            return
+        organization = conn.execute(
+            """SELECT organizations.id FROM organizations
+               JOIN memberships
+                 ON memberships.organization_id=organizations.id
+               WHERE memberships.user_id=?
+               ORDER BY organizations.created_at LIMIT 1""",
+            (admin["id"],),
+        ).fetchone()
+        company = (
+            conn.execute(
+                """SELECT id FROM companies WHERE organization_id=?
+                   ORDER BY created_at LIMIT 1""",
+                (organization["id"],),
+            ).fetchone()
+            if organization
+            else None
+        )
         if not organization or not company or not admin:
             return
         profile = {
@@ -359,28 +482,41 @@ class Store:
                 {"scheduled_for": scheduled_for, "bounded_autonomy": True},
             )
 
-    def invite(self, email: str, role: str = "creator") -> tuple[str, str]:
+    def invite(
+        self,
+        email: str,
+        role: str = "creator",
+        *,
+        company_id: str | None = None,
+        actor_id: str = "usr_admin",
+    ) -> tuple[str, str]:
         invite_id, token = new_id("inv"), secrets.token_urlsafe(24)
+        company_id = company_id or self.default_company_id()
         with self.connect() as conn:
-            org = conn.execute("SELECT id FROM organizations LIMIT 1").fetchone()
+            company = conn.execute(
+                "SELECT * FROM companies WHERE id=?", (company_id,)
+            ).fetchone()
+            if not company:
+                raise LookupError("Unknown company")
             conn.execute(
-                """INSERT INTO invitations VALUES (?, ?, ?, ?, ?, 'pending', 'usr_admin',
+                """INSERT INTO invitations VALUES (?, ?, ?, ?, ?, 'pending', ?,
                    ?, ?)""",
                 (
                     invite_id,
-                    org["id"],
+                    company["organization_id"],
                     email.lower().strip(),
                     role,
                     hashlib.sha256(token.encode()).hexdigest(),
+                    actor_id,
                     (datetime.now(UTC) + timedelta(days=7)).isoformat(),
                     now_iso(),
                 ),
             )
             self._audit(
                 conn,
-                org["id"],
-                None,
-                "usr_admin",
+                company["organization_id"],
+                company["id"],
+                actor_id,
                 "team.invited",
                 "invitation",
                 invite_id,

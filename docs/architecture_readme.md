@@ -172,6 +172,34 @@ SQLite cannot provide production row-level security, so the application and
 repository tests enforce these constraints now. A later Postgres
 implementation adds row-level policies as defense in depth.
 
+Shared FastSME authentication proves account identity; it does not implicitly
+grant access to a FastFunnel tenant. The login callback therefore provisions or
+resolves exactly one product workspace, records its `company_id` in the signed
+session, seeds that workspace's synthetic sources and default funnel
+idempotently, and then validates membership on every protected request.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Auth as FastSME account auth
+    participant Web as FastFunnel web
+    participant Store as Tenant store
+    participant Seed as Marketing seed service
+
+    User->>Auth: Local or Google sign-in
+    Auth-->>Web: Verified email and display name
+    Web->>Store: ensure_user_workspace(email)
+    Store->>Store: Resolve or create user, organization, company, membership
+    Store->>Seed: seed_company(company_id)
+    Seed->>Seed: Upsert connections, funnel, cohort, facts and KPIs
+    Web-->>User: Signed session bound to company_id
+```
+
+Provisioning IDs and provider entity IDs include the tenant boundary. Repeated
+login and process startup are safe, and demo-identity refresh targets only the
+configured demo administrator's organization rather than an arbitrary first
+row.
+
 ## Marketing ingestion and normalized data
 
 Connectors implement the provider-neutral `MarketingReadConnector` contract in
