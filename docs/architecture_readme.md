@@ -27,6 +27,8 @@ The first slice provides:
 - tenant-scoped xAI model preferences behind a LangChain `ChatXAI` boundary;
 - a persisted, tenant-grounded xAI copilot and 30-day operating-plan service
   that remains advisory and cannot call provider writes;
+- a marketing-plan read model composed from current normalized KPIs, the active
+  workspace funnel, and persisted agency runs rather than fixed presentation data;
 - a typed KPI explorer and Google Sheets/FastSME destination boundary;
 - Composio and Arcade execution adapters with encrypted per-tenant project
   keys and per-tenant/user connected-account identities;

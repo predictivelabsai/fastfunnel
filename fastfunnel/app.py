@@ -238,38 +238,112 @@ def google_callback(sess, request, code: str = "", state: str = "", error: str =
 
 
 @rt("/plan", methods=["GET"])
-def plan_view():
+def plan_view(sess):
+    company, user = tenant_context(sess)
+    marketing = MarketingService(store)
+    summary = marketing.analytics_summary(company["id"])
+    funnel = marketing.funnel(company_id=company["id"])
+    runs = AgencyService(store).runs(
+        company_id=company["id"],
+        actor_id=user["id"],
+        limit=10,
+    )
+    metrics = summary["metrics"]
+    spend = metrics.get("spend", 0)
+    conversions = metrics.get("conversions", 0)
+    model_status, model_reason = ModelGateway(store).readiness(company["id"])
     return shell(
         "Marketing plan",
         Div(
             Div(
-                Small("NORTH STAR"),
-                H2("Qualified AI platform engagements"),
-                P("Help organizations design and deliver auditable AI-first platforms."),
+                Small("LIVE WORKSPACE EVIDENCE"),
+                H2(funnel["definition"]["name"]),
+                P(
+                    f"{funnel['values'][0]:,} entered · "
+                    f"{funnel['values'][-1]:,} reached "
+                    f"{funnel['stages'][-1].name.lower()} · "
+                    f"{funnel['days']} day window."
+                ),
+                A("Inspect funnel", href="/analytics/funnel"),
                 cls="card",
             ),
             Div(
-                Small("OPERATING MODEL"),
-                H2("Bounded autonomous"),
-                P("The LangGraph agency may research, draft and schedule. Admin approves spend."),
+                Small("MODEL-GENERATED OPERATING PLAN"),
+                H2("Grounded in current performance"),
+                P(model_reason),
+                status_badge(model_status),
                 cls="card",
             ),
             cls="grid two",
         ),
-        Div(H2("90-day workstreams"), cls="section-head"),
         Div(
-            *[
-                Div(Small(f"WORKSTREAM {i:02}"), H3(title), P(copy), cls="card")
-                for i, (title, copy) in enumerate(
-                    [
-                        ("AI platform education", "Guides, architecture explainers and expert-led posts."),
-                        ("High-intent acquisition", "Targeted campaigns and conversion-focused landing pages."),
-                        ("Trust and proof", "Customer outcomes, transparent pricing and FAQs."),
-                    ],
-                    1,
-                )
-            ],
-            cls="grid cards",
+            metric("30-DAY SPEND", f"£{spend:,.0f}", "Normalized facts"),
+            metric("CONVERSIONS", f"{conversions:,.0f}", "Platform-reported"),
+            metric(
+                "COST / CONVERSION",
+                f"£{spend / conversions:,.2f}" if conversions else "—",
+                "Blended paid media",
+            ),
+            metric(
+                "FUNNEL CONVERSION",
+                (
+                    f"{funnel['values'][-1] / funnel['values'][0] * 100:.2f}%"
+                    if funnel["values"][0]
+                    else "—"
+                ),
+                f"{funnel['stages'][0].name} → {funnel['stages'][-1].name}",
+            ),
+            cls="grid metrics",
+        ),
+        Div(
+            H2("Generate a current 30-day plan"),
+            Form(
+                Input(type="hidden", name="return_to", value="/plan"),
+                Label(
+                    "Outcome",
+                    Textarea(
+                        name="goal",
+                        required=True,
+                        minlength="5",
+                        maxlength="1000",
+                        placeholder=(
+                            "Increase qualified digital demand while holding "
+                            "cost per conversion below target."
+                        ),
+                    ),
+                ),
+                Button(
+                    "Generate from workspace evidence",
+                    type="submit",
+                    disabled=model_status != "connected",
+                ),
+                method="post",
+                action="/agency/plan",
+                cls="stack",
+            ),
+            cls="card",
+        ),
+        Div(H2("Saved plans"), cls="section-head"),
+        Div(
+            *(
+                [
+                    Div(
+                        status_badge(run["status"]),
+                        H3(run["goal"]),
+                        P(run["result"], cls="agency-result"),
+                        Small(run["created_at"][:19] + " UTC"),
+                        cls="card",
+                    )
+                    for run in runs
+                ]
+                or [
+                    Div(
+                        "No operating plan has been generated for this workspace.",
+                        cls="empty",
+                    )
+                ]
+            ),
+            cls="grid",
         ),
         active="/plan",
     )
@@ -385,7 +459,7 @@ def agency_chat(sess, message: str):
 
 
 @rt("/agency/plan", methods=["POST"])
-def agency_plan(sess, goal: str):
+def agency_plan(sess, goal: str, return_to: str = "/agency"):
     company, user = tenant_context(sess)
     try:
         AgencyService(store).create_plan(
@@ -397,7 +471,10 @@ def agency_plan(sess, goal: str):
         return Response(str(exc), status_code=422)
     except RuntimeError as exc:
         return Response(str(exc), status_code=503)
-    return RedirectResponse("/agency", status_code=303)
+    return RedirectResponse(
+        return_to if return_to in {"/agency", "/plan"} else "/agency",
+        status_code=303,
+    )
 
 
 def campaign_provider_card(integration_id: str, detail: str):
