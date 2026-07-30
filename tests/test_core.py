@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fastfunnel.agents import build_agency_graph
-from fastfunnel.app import app
+from fastfunnel.app import app, auth_before
 from fastfunnel.domain.store import Store
 from fastfunnel.integrations import all_integrations, get_integration
 from fastfunnel.integrations.postmark import PostmarkInvitations
@@ -72,3 +72,15 @@ def test_content_and_approval_routes_are_method_scoped():
         set(route.methods) for route in app.routes if getattr(route, "path", "") == "/content"
     ]
     assert methods_by_path["/review/{item_id}/approve"] == {"POST"}
+
+
+def test_search_discovery_routes_are_public():
+    class URL:
+        path = "/sitemap.xml"
+
+    class Request:
+        url = URL()
+
+    assert auth_before(Request(), {}) is None
+    Request.url.path = "/robots.txt"
+    assert auth_before(Request(), {}) is None

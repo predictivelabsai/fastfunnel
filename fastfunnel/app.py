@@ -37,7 +37,16 @@ from fastfunnel.web.ui import (
 
 def auth_before(req, sess):
     if (
-        req.url.path in {"/", "/api", "/healthz", "/developers", "/swagger.json"}
+        req.url.path
+        in {
+            "/",
+            "/api",
+            "/healthz",
+            "/developers",
+            "/robots.txt",
+            "/sitemap.xml",
+            "/swagger.json",
+        }
         or req.url.path.startswith(("/api/", "/auth/", "/static/"))
     ):
         return None
