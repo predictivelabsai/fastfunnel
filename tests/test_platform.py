@@ -5,6 +5,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from fastfunnel.domain.actions import ActionService
+from fastfunnel.domain.agency import AgencyService
 from fastfunnel.domain.analytics import AnalyticsService
 from fastfunnel.domain.content import ContentService
 from fastfunnel.domain.ingestion import IngestionService
@@ -381,6 +382,94 @@ def test_content_generation_uses_configured_model_gateway(tmp_path: Path):
     )
     assert item["body"] == "A grounded model-generated post."
     assert item["status"] == "review"
+
+
+def test_agency_copilot_is_grounded_persisted_and_tenant_scoped(tmp_path: Path):
+    store = Store(tmp_path / "agency.sqlite3")
+    store.initialize()
+    company_id = store.default_company_id()
+
+    class FakeGateway:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, **kwargs):
+            self.calls.append(kwargs)
+            return "Prioritize the search campaign; its conversion facts are in scope."
+
+    gateway = FakeGateway()
+    agency = AgencyService(store, gateway)
+    response = agency.chat(
+        company_id=company_id,
+        actor_id="usr_admin",
+        message="What should I prioritize this week?",
+    )
+    run_id = agency.create_plan(
+        company_id=company_id,
+        actor_id="usr_admin",
+        goal="Increase qualified digital demand efficiently",
+    )
+
+    assert "Prioritize" in response
+    assert len(gateway.calls) == 2
+    system_prompt = gateway.calls[0]["messages"][0][1]
+    assert "marketing_facts" not in system_prompt
+    assert '"metrics":' in system_prompt
+    assert "Never claim that you published content" in system_prompt
+    assert [item["role"] for item in agency.history(
+        company_id=company_id,
+        actor_id="usr_admin",
+    )] == ["human", "assistant"]
+    assert agency.runs(
+        company_id=company_id,
+        actor_id="usr_admin",
+    )[0]["id"] == run_id
+    with store.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) FROM audit_events
+               WHERE company_id=? AND event_type LIKE 'agency.%'""",
+            (company_id,),
+        ).fetchone()[0] == 2
+
+    other_company, other_user = store.ensure_user_workspace("agency.other@example.test")
+    assert agency.history(
+        company_id=other_company["id"],
+        actor_id=other_user["id"],
+    ) == []
+    with pytest.raises(PermissionError):
+        agency.history(company_id=company_id, actor_id=other_user["id"])
+
+
+def test_campaign_read_model_and_manual_refresh_are_operational(tmp_path: Path):
+    store = Store(tmp_path / "campaign-workspace.sqlite3")
+    store.initialize()
+    company_id = store.default_company_id()
+    marketing = MarketingService(store)
+
+    summary = marketing.campaign_summary(company_id)
+    assert len(summary["campaigns"]) == 2
+    assert all(item["spend"] > 0 for item in summary["campaigns"])
+    assert all(item["clicks"] > item["conversions"] > 0 for item in summary["campaigns"])
+    assert summary["latest_sync"]["status"] == "succeeded"
+
+    first = marketing.enqueue_sync(
+        company_id,
+        actor_id="usr_admin",
+        manual=True,
+    )
+    second = marketing.enqueue_sync(
+        company_id,
+        actor_id="usr_admin",
+        manual=True,
+    )
+    assert first != second
+    assert marketing.campaign_summary(company_id)["pending_job"]["id"] == second
+    with store.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) FROM audit_events
+               WHERE company_id=? AND event_type='marketing.sync.queued'""",
+            (company_id,),
+        ).fetchone()[0] == 2
 
 
 def test_google_sheets_and_fastsme_destination_contracts(monkeypatch):

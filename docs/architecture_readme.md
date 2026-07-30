@@ -25,6 +25,8 @@ The first slice provides:
 - replayable HubSpot, Brevo, and GA4 ingestion with immutable raw extracts;
 - tenant-editable overlays over the immutable pinned Marketing Skills library;
 - tenant-scoped xAI model preferences behind a LangChain `ChatXAI` boundary;
+- a persisted, tenant-grounded xAI copilot and 30-day operating-plan service
+  that remains advisory and cannot call provider writes;
 - a typed KPI explorer and Google Sheets/FastSME destination boundary;
 - Composio and Arcade execution adapters with encrypted per-tenant project
   keys and per-tenant/user connected-account identities;
@@ -57,6 +59,8 @@ flowchart TB
         Funnel["Funnel engine"]
         Ingestion["Ingestion service"]
         Execution["Governed execution service"]
+        Agency["Agency copilot service<br/>tenant facts + saved conversation"]
+        Model["LangChain model gateway<br/>xAI, tenant configuration"]
         Queue["Database-backed job queue"]
         Worker["Separate worker process"]
         Audit["Append-only audit service"]
@@ -77,6 +81,8 @@ flowchart TB
     App --> Ingestion
     App --> Policy
     App --> Execution
+    App --> Agency
+    Agency --> Model
     Ingestion --> Queue
     Execution --> Policy
     Execution --> Queue
@@ -111,6 +117,7 @@ fastfunnel/
 │   ├── ingestion.py          # raw extracts, cursors, replay, normalization
 │   ├── analytics.py          # KPI semantics, explorer, saved queries, exports
 │   ├── content.py            # skill-grounded draft creation
+│   ├── agency.py             # persisted tenant-grounded copilot and plans
 │   ├── models.py             # LangChain/xAI model boundary
 │   ├── workspace.py          # model preferences and encrypted key vault
 │   ├── actions.py            # governed external action lifecycle
@@ -496,6 +503,8 @@ The following names match the current SQLite schema.
 | `crm_entities` | HubSpot/Brevo contacts, lifecycle stages, and revenue properties. |
 | `campaigns` | Normalized campaign identity and provider metadata. |
 | `marketing_facts` | Long-form daily metrics with currency and typed dimensions. |
+| `agency_messages` | Per-workspace, per-user copilot history; prompts contain summarized tenant facts, never credentials. |
+| `agency_runs` | Saved advisory operating plans with actor, goal, result, and status. |
 | `journey_entities` | Dated, campaign-attributed cohort entities with their highest reached stage. |
 | `funnel_definitions` | Workspace-owned funnel metadata and active version. |
 | `funnel_stages` | Ordered labels and JSON predicates belonging to a funnel definition. |

@@ -345,6 +345,47 @@ class MarketingService:
             ).fetchone()
             return {"metrics": metrics, "latest_sync": dict(latest) if latest else None}
 
+    def campaign_summary(self, company_id: str | None = None) -> dict:
+        company_id = company_id or self.store.default_company_id()
+        with self.store.connect() as conn:
+            campaigns = conn.execute(
+                """SELECT campaigns.*,
+                          COALESCE(SUM(CASE WHEN marketing_facts.metric='spend'
+                                    THEN marketing_facts.value ELSE 0 END), 0) AS spend,
+                          COALESCE(SUM(CASE WHEN marketing_facts.metric='clicks'
+                                    THEN marketing_facts.value ELSE 0 END), 0) AS clicks,
+                          COALESCE(SUM(CASE WHEN marketing_facts.metric='conversions'
+                                    THEN marketing_facts.value ELSE 0 END), 0) AS conversions
+                   FROM campaigns
+                   LEFT JOIN marketing_facts
+                     ON marketing_facts.company_id=campaigns.company_id
+                    AND marketing_facts.provider=campaigns.provider
+                    AND marketing_facts.campaign_external_id=campaigns.external_id
+                   WHERE campaigns.company_id=?
+                   GROUP BY campaigns.id
+                   ORDER BY spend DESC, campaigns.name""",
+                (company_id,),
+            ).fetchall()
+            latest_sync = conn.execute(
+                """SELECT id, provider, status, rows_written, started_at, finished_at
+                   FROM sync_runs
+                   WHERE company_id=? AND provider='google-ads'
+                   ORDER BY started_at DESC LIMIT 1""",
+                (company_id,),
+            ).fetchone()
+            pending_job = conn.execute(
+                """SELECT id, status, created_at FROM job_queue
+                   WHERE company_id=? AND job_type='sync.google_ads'
+                     AND status IN ('pending', 'running')
+                   ORDER BY created_at DESC LIMIT 1""",
+                (company_id,),
+            ).fetchone()
+        return {
+            "campaigns": [dict(row) for row in campaigns],
+            "latest_sync": dict(latest_sync) if latest_sync else None,
+            "pending_job": dict(pending_job) if pending_job else None,
+        }
+
     def funnel(
         self,
         funnel_id: str | None = None,
@@ -536,21 +577,51 @@ class MarketingService:
             )
         return funnel_id
 
-    def enqueue_sync(self, company_id: str | None = None) -> str:
+    def enqueue_sync(
+        self,
+        company_id: str | None = None,
+        *,
+        actor_id: str | None = None,
+        manual: bool = False,
+    ) -> str:
         company_id = company_id or self.store.default_company_id()
         today = datetime.now(UTC).date().isoformat()
         job_id = new_id("job")
+        idempotency_key = (
+            f"google-ads:manual:{job_id}" if manual else f"google-ads:{today}"
+        )
         with self.store.connect() as conn:
             company = conn.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
+            if not company:
+                raise LookupError("Unknown company")
+            if actor_id:
+                membership = conn.execute(
+                    """SELECT 1 FROM memberships
+                       WHERE organization_id=? AND user_id=?""",
+                    (company["organization_id"], actor_id),
+                ).fetchone()
+                if not membership:
+                    raise PermissionError("Workspace membership required")
             conn.execute(
                 """INSERT OR IGNORE INTO job_queue
                    (id, company_id, job_type, payload_json, idempotency_key,
                     status, available_at, created_at)
                    VALUES (?, ?, 'sync.google_ads', '{}', ?, 'pending', ?, ?)""",
-                (job_id, company["id"], f"google-ads:{today}", now_iso(), now_iso()),
+                (job_id, company["id"], idempotency_key, now_iso(), now_iso()),
             )
             row = conn.execute(
                 "SELECT id FROM job_queue WHERE company_id=? AND idempotency_key=?",
-                (company["id"], f"google-ads:{today}"),
+                (company["id"], idempotency_key),
             ).fetchone()
+            if actor_id:
+                Store._audit(
+                    conn,
+                    company["organization_id"],
+                    company_id,
+                    actor_id,
+                    "marketing.sync.queued",
+                    "job",
+                    row["id"],
+                    {"provider": "google-ads", "manual": manual},
+                )
             return row["id"]

@@ -18,7 +18,8 @@ approving demo administrator.
 - Configurable, cohort-based digital acquisition funnels with conserved Sankey
   progression and drop-off reporting.
 - Idempotent synthetic Google Ads ingestion into normalized campaign facts,
-  with sync freshness and run history.
+  with sync freshness, run history, a working campaign portfolio, and durable
+  manual refresh jobs.
 - Replayable HubSpot, Brevo, and GA4 source adapters with immutable raw
   extracts, source accounts, cursors, and normalized lifecycle records.
 - Tenant-editable Marketing Skills overlays that preserve the pinned upstream
@@ -32,7 +33,9 @@ approving demo administrator.
   repository exposes a token-gated artifact API.
 - SQLite-backed durable job queue and a separate `python -m fastfunnel.worker`
   process for background connector work.
-- LangGraph observe → plan → policy-gate workflow.
+- Persisted xAI/LangChain agency conversations and 30-day operating plans,
+  grounded in tenant content, campaign, funnel, and KPI facts. The deterministic
+  LangGraph policy contract remains covered by evals.
 - Complete vendored Marketing Skills catalog: 49 skills at pinned upstream
   commit `7868cb9251fad80a73d26e488a5ad5f6c4a9f335`.
 - Thirty-four registry-driven integration pages including Google, Meta,

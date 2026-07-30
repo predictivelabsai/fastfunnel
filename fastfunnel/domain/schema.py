@@ -1,6 +1,6 @@
 """Versioned SQLite schema for the operational marketing backend."""
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 DDL = """
 PRAGMA foreign_keys = ON;
@@ -392,4 +392,27 @@ CREATE TABLE IF NOT EXISTS kpi_definitions (
     updated_at TEXT NOT NULL,
     UNIQUE(company_id, slug)
 );
+
+CREATE TABLE IF NOT EXISTS agency_messages (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_agency_messages_conversation
+    ON agency_messages(company_id, user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agency_runs (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    actor_id TEXT NOT NULL REFERENCES users(id),
+    goal TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_agency_runs_company
+    ON agency_runs(company_id, created_at DESC);
 """

@@ -74,6 +74,9 @@ form.stack { display: grid; gap: 13px; }
 .rail-card p { margin: 6px 0 0; color: var(--muted); }
 .rail-input { display: flex; gap: 8px; padding: 16px; border-top: 1px solid var(--line); }
 .rail-input input { min-width: 0; }
+.agency-result { white-space: pre-wrap; line-height: 1.55; }
+.agency-message.human { margin-left: 12%; background: #f6ffe9; }
+.agency-message.assistant { margin-right: 8%; background: #f8fbff; }
 .catalog-card { display: flex; flex-direction: column; min-height: 170px; }
 .catalog-card .status { align-self: flex-start; margin-bottom: 12px; }
 .catalog-card p { color: var(--muted); flex: 1; }

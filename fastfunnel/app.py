@@ -8,9 +8,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fasthtml.common import *
 from starlette.responses import JSONResponse, RedirectResponse
 
-from fastfunnel.agents import build_agency_graph
 from fastfunnel.config import ROOT, settings
 from fastfunnel.domain.actions import ActionService
+from fastfunnel.domain.agency import AgencyService
 from fastfunnel.domain.analytics import BASE_METRICS, AnalyticsService
 from fastfunnel.domain.content import ContentService
 from fastfunnel.domain.marketing import MarketingService
@@ -150,7 +150,8 @@ def tenant_context(sess) -> tuple[dict, dict]:
         company, user = store.ensure_user_workspace(email)
     sess["user_email"] = user["email"]
     sess["company_id"] = company["id"]
-    set_shell_identity(company, user)
+    model_status, _ = ModelGateway(store).readiness(company["id"])
+    set_shell_identity(company, user, model_ready=model_status == "connected")
     return company, user
 
 
@@ -275,48 +276,156 @@ def plan_view():
 
 
 @rt("/agency", methods=["GET"])
-def agency_view():
-    graph = build_agency_graph()
-    result = graph.invoke(
-        {
-            "company_id": "co_predictivelabs",
-            "goal": "Increase qualified AI platform consulting engagements",
-            "messages": [],
-        }
-    )
+def agency_view(sess):
+    company, user = tenant_context(sess)
+    agency = AgencyService(store)
+    messages = agency.history(company_id=company["id"], actor_id=user["id"])
+    runs = agency.runs(company_id=company["id"], actor_id=user["id"])
+    model_status, model_reason = ModelGateway(store).readiness(company["id"])
     return shell(
         "Autonomous agency",
         Div(
             Div(
-                Small("LANGGRAPH RUN"),
-                H2("Observe → plan → policy gate"),
-                P("This preview is deterministic and performs no external writes."),
-                status_badge(result["status"]),
+                Small("WORKSPACE COPILOT"),
+                H2("Grounded advice, governed execution"),
+                P(
+                    "The copilot reads tenant-scoped content, campaign and KPI facts. "
+                    "It can advise and plan, but never bypasses approval services."
+                ),
+                status_badge(model_status),
+                Small(model_reason),
                 cls="card",
             ),
             Div(
-                Small("APPROVAL OWNER"),
-                H2(settings.admin_email),
-                P("All high-risk proposals are held for this administrator."),
+                H2("Create a 30-day operating plan"),
+                Form(
+                    Label(
+                        "Marketing goal",
+                        Textarea(
+                            name="goal",
+                            required=True,
+                            minlength="5",
+                            maxlength="1000",
+                            placeholder=(
+                                "Increase qualified demand while keeping cost per "
+                                "conversion below our target."
+                            ),
+                        ),
+                    ),
+                    Button(
+                        "Generate grounded plan",
+                        type="submit",
+                        disabled=model_status != "connected",
+                    ),
+                    method="post",
+                    action="/agency/plan",
+                    cls="stack",
+                ),
                 cls="card",
             ),
             cls="grid two",
         ),
-        Div(H2("Latest proposals"), cls="section-head"),
+        Div(H2("Copilot conversation"), cls="section-head"),
         Div(
-            *[
-                Div(
-                    status_badge("review" if proposal["requires_approval"] else "approved"),
-                    H3(proposal["summary"]),
-                    P(f"Risk: {proposal['risk']} · Action: {proposal['type']}"),
-                    cls="card",
-                )
-                for proposal in result["proposals"]
-            ],
-            cls="grid two",
+            *(
+                [
+                    Div(
+                        Small("YOU" if message["role"] == "human" else "AGENCY"),
+                        P(message["content"], cls="agency-result"),
+                        Small(message["created_at"][:19] + " UTC"),
+                        cls=f"card agency-message {message['role']}",
+                    )
+                    for message in messages
+                ]
+                or [
+                    Div(
+                        "Ask about content, social distribution, campaigns, funnels, "
+                        "or KPI performance using the copilot field on the right.",
+                        cls="empty",
+                    )
+                ]
+            ),
+            cls="grid",
+        ),
+        Div(H2("Saved operating plans"), cls="section-head"),
+        Div(
+            *(
+                [
+                    Div(
+                        status_badge(run["status"]),
+                        H3(run["goal"]),
+                        P(run["result"], cls="agency-result"),
+                        Small(run["created_at"][:19] + " UTC"),
+                        cls="card",
+                    )
+                    for run in runs
+                ]
+                or [Div("No plan has been generated yet.", cls="empty")]
+            ),
+            cls="grid",
         ),
         active="/agency",
     )
+
+
+@rt("/agency/chat", methods=["POST"])
+def agency_chat(sess, message: str):
+    company, user = tenant_context(sess)
+    try:
+        AgencyService(store).chat(
+            company_id=company["id"],
+            actor_id=user["id"],
+            message=message,
+        )
+    except ValueError as exc:
+        return Response(str(exc), status_code=422)
+    except RuntimeError as exc:
+        return Response(str(exc), status_code=503)
+    return RedirectResponse("/agency", status_code=303)
+
+
+@rt("/agency/plan", methods=["POST"])
+def agency_plan(sess, goal: str):
+    company, user = tenant_context(sess)
+    try:
+        AgencyService(store).create_plan(
+            company_id=company["id"],
+            actor_id=user["id"],
+            goal=goal,
+        )
+    except ValueError as exc:
+        return Response(str(exc), status_code=422)
+    except RuntimeError as exc:
+        return Response(str(exc), status_code=503)
+    return RedirectResponse("/agency", status_code=303)
+
+
+def campaign_provider_card(integration_id: str, detail: str):
+    integration = get_integration(integration_id)
+    return Div(
+        status_badge(integration.status),
+        H3(integration.name),
+        P(detail),
+        A(
+            "Configure" if integration.status != "stub" else "View roadmap",
+            href=f"/integrations/{integration.id}",
+        ),
+        cls="card catalog-card",
+    )
+
+
+def campaign_rows(campaigns: list[dict]):
+    return [
+        Tr(
+            Td(Strong(campaign["name"]), Br(), Small(campaign["channel"])),
+            Td(status_badge(campaign["status"])),
+            Td(f"{campaign['currency']} {campaign['daily_budget']:,.2f}"),
+            Td(f"{campaign['currency']} {campaign['spend']:,.2f}"),
+            Td(f"{campaign['clicks']:,.0f}"),
+            Td(f"{campaign['conversions']:,.0f}"),
+        )
+        for campaign in campaigns
+    ]
 
 
 @rt("/content", methods=["GET"])
@@ -653,30 +762,95 @@ def approve_action(sess, request_id: str):
 
 
 @rt("/campaigns", methods=["GET"])
-def campaigns_view():
+def campaigns_view(sess):
+    company, _ = tenant_context(sess)
+    summary = MarketingService(store).campaign_summary(company["id"])
+    campaigns = summary["campaigns"]
+    latest = summary["latest_sync"]
+    pending = summary["pending_job"]
     return shell(
         "Paid campaigns",
         Div(
-            H2("Google, Meta and LinkedIn Ads"),
-            P(
-                "Reporting contracts are available. Live account credentials and mutation adapters "
-                "are not configured."
-            ),
             Div(
-                *[
-                    Div(status_badge("available"), H3(name), P(detail), A("View setup", href=href), cls="card")
-                    for name, detail, href in [
-                        ("Google Ads", "Campaign reads, reporting and paused creation.", "/integrations/google-ads"),
-                        ("Meta Ads", "Campaign reads, insights and paused creation.", "/integrations/meta-ads"),
-                        ("LinkedIn Ads", "Versioned reporting; writes depend on access tier.", "/integrations/linkedin-ads"),
-                    ]
-                ],
-                cls="grid cards",
+                Div(
+                    Small("READ-ONLY CAMPAIGN OPERATIONS"),
+                    H2("Paid-media performance"),
+                    P(
+                        "Tenant-scoped reporting from the normalized marketing fact "
+                        "store. Paid-media mutations always require a governed approval."
+                    ),
+                ),
+                Form(
+                    Button(
+                        "Refresh queued" if pending else "Queue Google Ads refresh",
+                        type="submit",
+                        disabled=bool(pending),
+                    ),
+                    method="post",
+                    action="/campaigns/sync",
+                ),
+                cls="hero",
+            ),
+            P(
+                (
+                    f"Last {latest['provider']} sync: {latest['status']} · "
+                    f"{latest['rows_written']:,} facts · "
+                    f"{(latest['finished_at'] or latest['started_at'])[:19]} UTC"
+                )
+                if latest
+                else "No ingestion run has completed."
             ),
             cls="card",
         ),
+        Div(
+            H2("Campaign portfolio"),
+            Table(
+                Thead(
+                    Tr(
+                        Th("Campaign"),
+                        Th("Status"),
+                        Th("Daily budget"),
+                        Th("30-day spend"),
+                        Th("Clicks"),
+                        Th("Conversions"),
+                    )
+                ),
+                Tbody(*campaign_rows(campaigns)),
+                cls="table",
+            )
+            if campaigns
+            else Div("No campaigns have been ingested.", cls="empty"),
+            cls="card",
+        ),
+        Div(H2("Provider readiness"), cls="section-head"),
+        Div(
+            campaign_provider_card(
+                "google-ads",
+                "Synthetic reporting is active; add credentials later to switch the read adapter.",
+            ),
+            campaign_provider_card(
+                "meta-ads",
+                "Provider contract is listed honestly according to current implementation status.",
+            ),
+            campaign_provider_card(
+                "linkedin-ads",
+                "Provider contract is listed honestly according to current implementation status.",
+            ),
+            cls="grid cards",
+        ),
         active="/campaigns",
     )
+
+
+@rt("/campaigns/sync", methods=["POST"])
+def queue_campaign_sync(sess):
+    company, user = tenant_context(sess)
+    MarketingService(store).enqueue_sync(
+        company["id"],
+        actor_id=user["id"],
+        manual=True,
+    )
+    return RedirectResponse("/campaigns", status_code=303)
 
 
 @rt("/analytics", methods=["GET"])

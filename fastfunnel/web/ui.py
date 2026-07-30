@@ -6,13 +6,13 @@ from fasthtml.common import *
 
 from fastfunnel.integrations import CATEGORIES, all_integrations
 
-_shell_identity: ContextVar[tuple[dict, dict] | None] = ContextVar(
+_shell_identity: ContextVar[tuple[dict, dict, bool] | None] = ContextVar(
     "fastfunnel_shell_identity", default=None
 )
 
 
-def set_shell_identity(company: dict, user: dict) -> None:
-    _shell_identity.set((company, user))
+def set_shell_identity(company: dict, user: dict, model_ready: bool = False) -> None:
+    _shell_identity.set((company, user, model_ready))
 
 
 def icon(name: str) -> Span:
@@ -98,7 +98,7 @@ def topbar(
 
 def shell(title: str, *content, active: str = "/", rail=None):
     identity = _shell_identity.get()
-    company, user = identity if identity else ({}, {})
+    company, user, model_ready = identity if identity else ({}, {}, False)
     company_name = company.get("name", "FastFunnel")
     return (
         Title(f"{title} · FastFunnel"),
@@ -113,27 +113,53 @@ def shell(title: str, *content, active: str = "/", rail=None):
                 Div(*content, cls="page-content"),
                 cls="main",
             ),
-            rail or assistant_rail(company_name),
+            rail or assistant_rail(company_name, enabled=model_ready),
             cls="app-shell",
         ),
     )
 
 
-def assistant_rail(company_name: str = "your workspace"):
+def assistant_rail(company_name: str = "your workspace", *, enabled: bool = False):
     return Aside(
-        Div(Span("✦", cls="spark"), Div(Strong("Agency copilot"), Small("LangGraph swarm")), cls="rail-head"),
+        Div(
+            Span("✦", cls="spark"),
+            Div(Strong("Agency copilot"), Small("xAI · LangChain")),
+            cls="rail-head",
+        ),
         Div(
             P(
                 "I can draft, review, distribute and measure—within "
                 f"{company_name}'s approval policy."
             ),
             Div(Strong("Current guardrail"), P("Publishing is bounded. Spend changes require admin approval."), cls="rail-card"),
-            Div(Strong("Suggested"), P("Create a LinkedIn post about building auditable AI platforms."), cls="rail-card accent"),
+            Div(
+                Strong("Grounded answers"),
+                P("Uses this workspace's content, campaigns and KPI facts."),
+                cls="rail-card accent",
+            ),
             cls="rail-body",
         ),
         Form(
-            Input(name="message", placeholder="Ask the agency…", disabled=True),
-            Button("↑", type="button", disabled=True),
+            Input(
+                name="message",
+                placeholder=(
+                    "Ask the agency…"
+                    if enabled
+                    else "Configure xAI in Workspace settings"
+                ),
+                minlength="2",
+                maxlength="4000",
+                required=True,
+                disabled=not enabled,
+            ),
+            Button(
+                "↑",
+                type="submit",
+                aria_label="Send to agency",
+                disabled=not enabled,
+            ),
+            method="post",
+            action="/agency/chat",
             cls="rail-input",
         ),
         cls="assistant-rail",
@@ -141,7 +167,11 @@ def assistant_rail(company_name: str = "your workspace"):
 
 
 def status_badge(status: str):
-    label = "Coming soon" if status == "stub" else status.replace("-", " ")
+    label = (
+        "Coming soon"
+        if status == "stub"
+        else status.replace("-", " ").replace("_", " ")
+    )
     return Span(label, cls=f"status {status}")
 
 
