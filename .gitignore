@@ -209,6 +209,7 @@ data/
 docs/demo/frames/
 output/playwright/
 .playwright-cli/
+.worktrees/
 .sesskey
 *.sqlite3
 

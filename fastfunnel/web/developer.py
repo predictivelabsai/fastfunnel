@@ -42,7 +42,7 @@ def developer_content():
         Div(
             Span("Developer platform · API v1", cls="dev-eyebrow"),
             H1("Build with the FastFunnel API."),
-            P("Read and automate your own workspace through a typed, versioned private API. Every bearer token is tenant-bound, expiring, and revocable.", cls="dev-lede"),
+            P("Read the live demo database through a typed, versioned API. Selected integration writes are implemented behind bearer-token authentication.", cls="dev-lede"),
             Div(
                 A("Open Swagger UI", href="/api/docs", cls="dev-btn primary"),
                 A("Open ReDoc", href="/api/redoc", cls="dev-btn"),
@@ -51,24 +51,18 @@ def developer_content():
                 cls="dev-actions",
             ),
             Div(
-                Strong("Tenant-protected integration access. "),
-                "Create a workspace token under Settings. API data is scoped from the token; callers cannot select another company with a header or request field.",
+                Strong("Public preview access. "),
+                "GET endpoints require no authentication. Writes return 503 until FASTSME_API_TOKEN is configured; enabled clients send Authorization: Bearer <token>.",
                 cls="dev-note",
             ),
             H3("Resources"),
             Div(*cards, cls="dev-grid"),
             H3("Quick start"),
-            Pre(Code(f"""curl -H "Authorization: Bearer $FASTFUNNEL_WORKSPACE_TOKEN" \\
-  "{BASE_URL}/api/v1/{RESOURCES[0].slug}?limit=20"
+            Pre(Code(f"""curl "{BASE_URL}/api/v1/{RESOURCES[0].slug}?limit=20"
 
 python - <<'PY'
-import os
 import requests
-rows = requests.get(
-    "{BASE_URL}/api/v1/{RESOURCES[0].slug}",
-    headers={{"Authorization": f"Bearer {{os.environ['FASTFUNNEL_WORKSPACE_TOKEN']}}"}},
-    timeout=20,
-).json()
+rows = requests.get("{BASE_URL}/api/v1/{RESOURCES[0].slug}", timeout=20).json()
 print(rows["data"])
 PY"""), cls="dev-example"),
             P("Runtime OpenAPI: /api/openapi.json · Stable compatibility schema: /swagger.json · Interactive docs: /api/docs", cls="dev-small"),
@@ -88,9 +82,11 @@ def developer_page():
             *seo_meta(
                 path="/developers",
                 title="FastFunnel Developer API · FastSME",
-                description="Build tenant-protected integrations with the FastFunnel API, OpenAPI schemas, examples, and governed writes.",
+                description="Build integrations with the public FastFunnel API, OpenAPI schemas, examples, and token-gated writes.",
             ),
             Link(rel="icon", type="image/svg+xml", href=FAVICON),
+            Link(rel="preconnect", href="https://fonts.googleapis.com"),
+            Link(rel="stylesheet", href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;750&display=swap"),
         ),
         Body(
             Nav(

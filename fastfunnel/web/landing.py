@@ -40,6 +40,8 @@ def landing_page():
              Meta(name="description", content="Plan, create, review, schedule, distribute, and measure marketing work through a bounded autonomous agency."),
              *seo_meta(),
              Link(rel="icon", type="image/svg+xml", href=FAVICON),
+             Link(rel="preconnect", href="https://fonts.googleapis.com"),
+             Link(rel="stylesheet", href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;750&display=swap"),
              Style(CSS + AUTH_CSS)),
         Body(
             Nav(A(Span("F", cls="lp-mark"), Span("FastFunnel"), href="/", cls="lp-brand"),
@@ -62,7 +64,7 @@ def landing_page():
                             cls="lp-grid"), cls="lp-band"),
                 Section(Div(Span("Developers", cls="lp-kicker"),
                             H2("Build on FastFunnel."),
-                            P("Explore the tenant-protected API, typed schemas, examples, and governed integration writes.")),
+                            P("Explore the public read API, typed schemas, examples, and token-gated integration writes.")),
                         A("Read the API documentation →", href="/developers", cls="lp-primary"),
                         cls="lp-developers"),
             ),
