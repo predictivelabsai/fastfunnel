@@ -647,6 +647,76 @@ class Store:
             )
         return item_id
 
+    def create_scheduled_content(
+        self,
+        title: str,
+        body: str,
+        channel: str,
+        scheduled_for: str,
+        *,
+        company_id: str,
+        actor_id: str,
+    ) -> str:
+        """Atomically create, approve, and schedule an admin-authored post."""
+        title = title.strip()
+        body = body.strip()
+        channel = channel.strip().lower()
+        if not 3 <= len(title) <= 160:
+            raise ValueError("Title must contain 3 to 160 characters")
+        if not 10 <= len(body) <= 10000:
+            raise ValueError("Post body must contain 10 to 10,000 characters")
+        if channel not in {"linkedin", "instagram", "facebook", "x"}:
+            raise ValueError("Unsupported content channel")
+        item_id = new_id("cnt")
+        created = now_iso()
+        with self.connect() as conn:
+            company = conn.execute(
+                "SELECT * FROM companies WHERE id=?", (company_id,)
+            ).fetchone()
+            membership = conn.execute(
+                """SELECT role FROM workspace_memberships
+                   WHERE company_id=? AND user_id=?""",
+                (company_id, actor_id),
+            ).fetchone()
+            if not company:
+                raise LookupError("Unknown company")
+            if not membership or membership["role"] != "admin":
+                raise PermissionError("Admin role required to approve a direct schedule")
+            conn.execute(
+                """INSERT INTO content_items
+                   (id, company_id, title, body, channel, status, created_by,
+                    approved_by, scheduled_for, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?)""",
+                (
+                    item_id,
+                    company_id,
+                    title,
+                    body,
+                    channel,
+                    actor_id,
+                    actor_id,
+                    scheduled_for,
+                    created,
+                    created,
+                ),
+            )
+            self._audit(
+                conn,
+                company["organization_id"],
+                company_id,
+                actor_id,
+                "content.created_and_scheduled",
+                "content",
+                item_id,
+                {
+                    "channel": channel,
+                    "scheduled_for": scheduled_for,
+                    "explicit_admin_approval": True,
+                    "bounded_autonomy": True,
+                },
+            )
+        return item_id
+
     def approve_content(
         self,
         item_id: str,
@@ -696,8 +766,10 @@ class Store:
                    WHERE content_items.id=? AND content_items.company_id=?""",
                 (item_id, company_id),
             ).fetchone()
-            if not item or item["status"] != "approved":
-                return
+            if not item:
+                raise LookupError("Approved content not found")
+            if item["status"] != "approved":
+                raise ValueError("Only approved content can be scheduled")
             conn.execute(
                 """UPDATE content_items SET status='scheduled', scheduled_for=?,
                    updated_at=? WHERE id=? AND company_id=?""",
@@ -712,6 +784,50 @@ class Store:
                 "content",
                 item_id,
                 {"scheduled_for": scheduled_for, "bounded_autonomy": True},
+            )
+
+    def unschedule_content(
+        self,
+        item_id: str,
+        *,
+        company_id: str,
+        actor_id: str,
+    ) -> None:
+        """Return a scheduled item to the approved queue without deleting it."""
+        with self.connect() as conn:
+            item = conn.execute(
+                """SELECT content_items.*, companies.organization_id
+                   FROM content_items
+                   JOIN companies ON companies.id=content_items.company_id
+                   WHERE content_items.id=? AND content_items.company_id=?""",
+                (item_id, company_id),
+            ).fetchone()
+            membership = conn.execute(
+                """SELECT role FROM workspace_memberships
+                   WHERE company_id=? AND user_id=?""",
+                (company_id, actor_id),
+            ).fetchone()
+            if not item:
+                raise LookupError("Scheduled content not found")
+            if not membership or membership["role"] != "admin":
+                raise PermissionError("Admin role required to unschedule content")
+            if item["status"] != "scheduled":
+                raise ValueError("Only scheduled content can be unscheduled")
+            conn.execute(
+                """UPDATE content_items
+                   SET status='approved', scheduled_for=NULL, updated_at=?
+                   WHERE id=? AND company_id=?""",
+                (now_iso(), item_id, company_id),
+            )
+            self._audit(
+                conn,
+                item["organization_id"],
+                company_id,
+                actor_id,
+                "content.unscheduled",
+                "content",
+                item_id,
+                {"previous_scheduled_for": item["scheduled_for"]},
             )
 
     def reschedule_content(

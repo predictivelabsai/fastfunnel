@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import calendar as calendar_module
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
@@ -689,7 +690,11 @@ def review_view(sess):
                 cls="table",
             )
             if rows
-            else Div("Nothing is waiting for review.", cls="empty"),
+            else Div(
+                P("Nothing is waiting for review."),
+                A("Create a content draft →", href="/content"),
+                cls="empty",
+            ),
             cls="card",
         ),
         Div(
@@ -735,45 +740,152 @@ def approve_content(sess, item_id: str):
     return RedirectResponse("/calendar", status_code=303)
 
 
+def _calendar_month(value: str, today: date) -> date:
+    try:
+        year, month = (int(part) for part in value.split("-", 1))
+        return date(year, month, 1)
+    except (TypeError, ValueError):
+        return today.replace(day=1)
+
+
+def _shift_month(value: date, months: int) -> date:
+    position = value.year * 12 + value.month - 1 + months
+    return date(position // 12, position % 12 + 1, 1)
+
+
+def _calendar_url(month: date, channel: str, status: str) -> str:
+    return (
+        f"/calendar?month={month:%Y-%m}&channel={channel}&status={status}"
+    )
+
+
 @rt("/calendar", methods=["GET"])
-def calendar_view(sess):
+def calendar_view(
+    sess,
+    month: str = "",
+    channel: str = "all",
+    status: str = "all",
+    saved: str = "",
+):
     company, _ = tenant_context(sess)
-    items = [
+    try:
+        timezone = ZoneInfo(company["timezone"])
+    except ZoneInfoNotFoundError:
+        timezone = ZoneInfo("UTC")
+    now = datetime.now(UTC)
+    local_now = now.astimezone(timezone)
+    selected_month = _calendar_month(month, local_now.date())
+    allowed_channels = {"all", "linkedin", "instagram", "facebook", "x"}
+    allowed_statuses = {"all", "scheduled", "published"}
+    channel = channel if channel in allowed_channels else "all"
+    status = status if status in allowed_statuses else "all"
+    all_items = store.list_content(company["id"])
+    scheduled_items = []
+    for item in all_items:
+        if item["status"] not in {"scheduled", "published"} or not item["scheduled_for"]:
+            continue
+        scheduled_at = datetime.fromisoformat(item["scheduled_for"])
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=UTC)
+        local_scheduled = scheduled_at.astimezone(timezone)
+        calendar_item = dict(item)
+        calendar_item["local_scheduled"] = local_scheduled
+        if channel != "all" and calendar_item["channel"] != channel:
+            continue
+        if status != "all" and calendar_item["status"] != status:
+            continue
+        scheduled_items.append(calendar_item)
+    scheduled_items.sort(key=lambda item: item["local_scheduled"])
+    month_items = [
         item
-        for item in store.list_content(company["id"])
-        if item["status"] in {"scheduled", "published"}
+        for item in scheduled_items
+        if item["local_scheduled"].year == selected_month.year
+        and item["local_scheduled"].month == selected_month.month
     ]
-    return shell(
-        "Publishing calendar",
-        Div(
-            H2("Bounded autonomous queue"),
-            P("Approved content is assigned the next safe slot. Live dispatch adapters are not enabled yet."),
-            *(
-                [
-                    Div(
-                        status_badge(item["status"]),
-                        H3(item["title"]),
-                        P(item["body"]),
-                        Small(f"{item['channel'].title()} · {item['scheduled_for']}"),
-                        (
-                            Form(
-                                Label(
-                                    "Publish at",
-                                    Input(
-                                        type="datetime-local",
-                                        name="scheduled_for",
-                                        value=item["scheduled_for"][:16],
-                                        required=True,
-                                    ),
+    by_day: dict[date, list[dict]] = {}
+    for item in month_items:
+        by_day.setdefault(item["local_scheduled"].date(), []).append(item)
+    with store.connect() as conn:
+        action_rows = conn.execute(
+            """SELECT object_id, provider, status, created_at
+               FROM action_requests
+               WHERE company_id=? AND action_type='content.publish'
+               ORDER BY created_at DESC""",
+            (company["id"],),
+        ).fetchall()
+    latest_actions = {}
+    for action in action_rows:
+        latest_actions.setdefault(action["object_id"], dict(action))
+    pipeline_items = [
+        item for item in all_items if item["status"] in {"review", "approved"}
+    ]
+    next_slot = (local_now + timedelta(days=1)).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
+    weeks = calendar_module.Calendar(firstweekday=0).monthdatescalendar(
+        selected_month.year, selected_month.month
+    )
+
+    def calendar_event(item: dict):
+        return A(
+            Strong(item["local_scheduled"].strftime("%H:%M")),
+            Span(item["title"]),
+            Small(item["channel"].title()),
+            href=f"#item-{item['id']}",
+            cls=f"calendar-event {item['status']}",
+        )
+
+    def detailed_item(item: dict):
+        action = latest_actions.get(item["id"])
+        publishable = item["channel"] in {"linkedin", "x"}
+        return Div(
+            Div(
+                Div(
+                    status_badge(item["status"]),
+                    H3(item["title"]),
+                    Small(
+                        f"{item['channel'].title()} · "
+                        f"{item['local_scheduled']:%a %d %b, %H:%M} "
+                        f"{company['timezone']}"
+                    ),
+                ),
+                (
+                    status_badge(action["status"])
+                    if action
+                    else ""
+                ),
+                cls="section-head compact",
+            ),
+            P(item["body"]),
+            (
+                Div(
+                    Form(
+                        Label(
+                            "Move to",
+                            Input(
+                                type="datetime-local",
+                                name="scheduled_for",
+                                value=item["local_scheduled"].strftime(
+                                    "%Y-%m-%dT%H:%M"
                                 ),
-                                Button("Update slot", type="submit"),
-                                method="post",
-                                action=f"/calendar/{item['id']}/reschedule",
-                                cls="funnel-filter",
-                            )
-                            if item["status"] == "scheduled"
-                            else ""
+                                required=True,
+                            ),
                         ),
+                        Button("Update slot", type="submit"),
+                        method="post",
+                        action=f"/calendar/{item['id']}/reschedule",
+                        cls="funnel-filter",
+                    ),
+                    Form(
+                        Button(
+                            "Remove from calendar",
+                            type="submit",
+                            cls="btn secondary",
+                        ),
+                        method="post",
+                        action=f"/calendar/{item['id']}/unschedule",
+                    ),
+                    (
                         Form(
                             Select(
                                 Option("Arcade", value="arcade"),
@@ -781,23 +893,362 @@ def calendar_view(sess):
                                 name="provider",
                             ),
                             Button(
-                                "Request publication approval",
+                                (
+                                    "Approval already requested"
+                                    if action
+                                    and action["status"]
+                                    in {"proposed", "awaiting_approval", "approved"}
+                                    else "Request publication approval"
+                                ),
                                 type="submit",
-                                disabled=item["status"] == "published",
+                                disabled=bool(
+                                    action
+                                    and action["status"]
+                                    in {
+                                        "proposed",
+                                        "awaiting_approval",
+                                        "approved",
+                                    }
+                                ),
                             ),
                             method="post",
                             action=f"/publish/{item['id']}/propose",
                             cls="funnel-filter",
+                        )
+                        if publishable
+                        else P(
+                            "Governed publishing for this channel is Coming soon; "
+                            "the scheduled item remains editable.",
+                            cls="muted",
+                        )
+                    ),
+                    cls="calendar-actions",
+                )
+                if item["status"] == "scheduled"
+                else P("Published items are retained as immutable calendar history.")
+            ),
+            id=f"item-{item['id']}",
+            cls="card calendar-detail",
+        )
+
+    return shell(
+        "Publishing calendar",
+        Div("Post scheduled.", cls="notice") if saved == "1" else "",
+        Div(
+            Div(
+                H2("Bounded autonomous publishing"),
+                P(
+                    "Plan exact content slots, retain human approval, and send any "
+                    "external publication through governed action requests."
+                ),
+            ),
+            Div(
+                A(
+                    "←",
+                    href=_calendar_url(
+                        _shift_month(selected_month, -1), channel, status
+                    ),
+                    cls="btn secondary",
+                    aria_label="Previous month",
+                ),
+                A(
+                    "Today",
+                    href=_calendar_url(
+                        local_now.date().replace(day=1), channel, status
+                    ),
+                    cls="btn secondary",
+                ),
+                A(
+                    "→",
+                    href=_calendar_url(
+                        _shift_month(selected_month, 1), channel, status
+                    ),
+                    cls="btn secondary",
+                    aria_label="Next month",
+                ),
+                cls="top-actions",
+            ),
+            cls="hero",
+        ),
+        Div(
+            metric(
+                "MONTH ITEMS",
+                str(len(month_items)),
+                selected_month.strftime("%B %Y"),
+            ),
+            metric(
+                "SCHEDULED",
+                str(sum(item["status"] == "scheduled" for item in month_items)),
+                company["timezone"],
+            ),
+            metric(
+                "PUBLISHED",
+                str(sum(item["status"] == "published" for item in month_items)),
+                "Immutable history",
+            ),
+            metric(
+                "NEEDS ATTENTION",
+                str(len(pipeline_items)),
+                "Review or scheduling",
+            ),
+            cls="grid metrics",
+        ),
+        Div(
+            Div(
+                H2("Schedule an approved post"),
+                P(
+                    "An administrator's submission is the explicit content approval. "
+                    "Nothing is sent externally from this form."
+                ),
+                Form(
+                    Label(
+                        "Title",
+                        Input(
+                            name="title",
+                            required=True,
+                            minlength="3",
+                            maxlength="160",
+                            placeholder="Working title for the calendar",
                         ),
-                        cls="card",
+                    ),
+                    Label(
+                        "Channel",
+                        Select(
+                            Option("LinkedIn", value="linkedin"),
+                            Option("Instagram", value="instagram"),
+                            Option("Facebook", value="facebook"),
+                            Option("X", value="x"),
+                            name="channel",
+                        ),
+                    ),
+                    Label(
+                        "Post",
+                        Textarea(
+                            name="body",
+                            required=True,
+                            minlength="10",
+                            maxlength="10000",
+                            placeholder="Write the exact approved post body…",
+                        ),
+                    ),
+                    Label(
+                        "Publish at",
+                        Input(
+                            type="datetime-local",
+                            name="scheduled_for",
+                            value=next_slot.strftime("%Y-%m-%dT%H:%M"),
+                            required=True,
+                        ),
+                    ),
+                    Button("Approve and schedule", type="submit"),
+                    method="post",
+                    action="/calendar",
+                    cls="stack",
+                ),
+                cls="card",
+            ),
+            Div(
+                H2("Pipeline requiring attention"),
+                *(
+                    [
+                        Div(
+                            status_badge(item["status"]),
+                            Strong(item["title"]),
+                            Small(item["channel"].title()),
+                            (
+                                Form(
+                                    Input(
+                                        type="datetime-local",
+                                        name="scheduled_for",
+                                        value=next_slot.strftime(
+                                            "%Y-%m-%dT%H:%M"
+                                        ),
+                                        required=True,
+                                    ),
+                                    Button("Schedule approved item", type="submit"),
+                                    method="post",
+                                    action=f"/calendar/{item['id']}/schedule",
+                                    cls="stack compact",
+                                )
+                                if item["status"] == "approved"
+                                else A("Open review →", href="/review")
+                            ),
+                            cls="pipeline-item",
+                        )
+                        for item in pipeline_items[:8]
+                    ]
+                    or [
+                        Div(
+                            P("No drafts are waiting for review or scheduling."),
+                            A("Create a content draft →", href="/content"),
+                            cls="empty",
+                        )
+                    ]
+                ),
+                cls="card",
+            ),
+            cls="grid two calendar-planner",
+        ),
+        Div(
+            Div(
+                H2(selected_month.strftime("%B %Y")),
+                Form(
+                    Input(
+                        type="hidden",
+                        name="month",
+                        value=selected_month.strftime("%Y-%m"),
+                    ),
+                    Label(
+                        "Channel",
+                        Select(
+                            *[
+                                Option(
+                                    value.title(),
+                                    value=value,
+                                    selected=value == channel,
+                                )
+                                for value in (
+                                    "all",
+                                    "linkedin",
+                                    "instagram",
+                                    "facebook",
+                                    "x",
+                                )
+                            ],
+                            name="channel",
+                        ),
+                    ),
+                    Label(
+                        "Status",
+                        Select(
+                            *[
+                                Option(
+                                    value.title(),
+                                    value=value,
+                                    selected=value == status,
+                                )
+                                for value in ("all", "scheduled", "published")
+                            ],
+                            name="status",
+                        ),
+                    ),
+                    Button("Apply", type="submit"),
+                    method="get",
+                    action="/calendar",
+                    cls="funnel-filter",
+                ),
+                cls="section-head",
+            ),
+            Div(
+                *[
+                    Div(name, cls="calendar-weekday")
+                    for name in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+                ],
+                *[
+                    Div(
+                        Strong(day.day),
+                        *[calendar_event(item) for item in by_day.get(day, [])],
+                        cls=(
+                            "calendar-day outside"
+                            if day.month != selected_month.month
+                            else "calendar-day today"
+                            if day == local_now.date()
+                            else "calendar-day"
+                        ),
                     )
-                    for item in items
+                    for week in weeks
+                    for day in week
+                ],
+                cls="calendar-grid",
+            ),
+            cls="card calendar-month",
+        ),
+        Div(H2("Scheduled queue"), cls="section-head"),
+        Div(
+            *(
+                [detailed_item(item) for item in month_items]
+                or [
+                    Div(
+                        P(
+                            "No content matches this month and filter. Use the "
+                            "scheduler above or change the filters."
+                        ),
+                        A("Create a content draft →", href="/content"),
+                        cls="empty",
+                    )
                 ]
-                or [Div("Approve a draft to place it in the queue.", cls="empty")]
             ),
             cls="grid",
         ),
         active="/calendar",
+    )
+
+
+@rt("/calendar", methods=["POST"])
+def create_calendar_item(
+    sess,
+    title: str,
+    body: str,
+    channel: str,
+    scheduled_for: str,
+):
+    company, user = tenant_context(sess)
+    try:
+        local_time = datetime.fromisoformat(scheduled_for)
+        if local_time.tzinfo is None:
+            local_time = local_time.replace(tzinfo=ZoneInfo(company["timezone"]))
+        utc_time = local_time.astimezone(UTC).replace(microsecond=0)
+        if utc_time <= datetime.now(UTC):
+            raise ValueError("Publication time must be in the future")
+        store.create_scheduled_content(
+            title,
+            body,
+            channel,
+            utc_time.isoformat(),
+            company_id=company["id"],
+            actor_id=user["id"],
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except LookupError as exc:
+        return Response(str(exc), status_code=404)
+    except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+        return Response(str(exc), status_code=422)
+    return RedirectResponse(
+        f"/calendar?saved=1&month={local_time:%Y-%m}",
+        status_code=303,
+    )
+
+
+@rt("/calendar/{item_id}/schedule", methods=["POST"])
+def schedule_approved_calendar_item(
+    sess,
+    item_id: str,
+    scheduled_for: str,
+):
+    company, user = tenant_context(sess)
+    try:
+        local_time = datetime.fromisoformat(scheduled_for)
+        if local_time.tzinfo is None:
+            local_time = local_time.replace(tzinfo=ZoneInfo(company["timezone"]))
+        utc_time = local_time.astimezone(UTC).replace(microsecond=0)
+        if utc_time <= datetime.now(UTC):
+            raise ValueError("Publication time must be in the future")
+        store.schedule_content(
+            item_id,
+            utc_time.isoformat(),
+            company_id=company["id"],
+            actor_id=user["id"],
+        )
+    except LookupError as exc:
+        return Response(str(exc), status_code=404)
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+        return Response(str(exc), status_code=422)
+    return RedirectResponse(
+        f"/calendar?month={local_time:%Y-%m}",
+        status_code=303,
     )
 
 
@@ -822,6 +1273,27 @@ def reschedule_calendar_item(sess, item_id: str, scheduled_for: str):
     except PermissionError as exc:
         return Response(str(exc), status_code=403)
     except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+        return Response(str(exc), status_code=422)
+    return RedirectResponse(
+        f"/calendar?month={local_time:%Y-%m}",
+        status_code=303,
+    )
+
+
+@rt("/calendar/{item_id}/unschedule", methods=["POST"])
+def unschedule_calendar_item(sess, item_id: str):
+    company, user = tenant_context(sess)
+    try:
+        store.unschedule_content(
+            item_id,
+            company_id=company["id"],
+            actor_id=user["id"],
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except LookupError as exc:
+        return Response(str(exc), status_code=404)
+    except ValueError as exc:
         return Response(str(exc), status_code=422)
     return RedirectResponse("/calendar", status_code=303)
 
@@ -1286,7 +1758,13 @@ def growth_dashboard_view(sess, days: str = "30"):
             days=selected_days,
         )
     except (LookupError, ValueError):
-        funnel = None
+        try:
+            funnel = MarketingService(store).funnel(
+                company_id=company["id"],
+                days=selected_days,
+            )
+        except (LookupError, ValueError):
+            funnel = None
 
     channels = sorted({row["channel"] for row in data["series"]})
     session_traces = [
@@ -1486,7 +1964,11 @@ def growth_dashboard_view(sess, days: str = "30"):
             if funnel
             else Div(
                 H2("Lifecycle model not configured"),
-                P("Choose one of the three seeded business organisations."),
+                P(
+                    "Add a funnel definition or choose a seeded business "
+                    "organisation."
+                ),
+                A("Configure a funnel →", href="/analytics/funnel"),
                 cls="card empty",
             )
         ),

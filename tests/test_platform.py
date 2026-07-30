@@ -571,6 +571,65 @@ def test_account_provisioning_seeds_an_isolated_working_product(tmp_path: Path):
     assert store.company_for_user(user["email"])["name"] == "New Owner Marketing"
 
 
+def test_admin_can_create_and_reversibly_unschedule_calendar_content(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "calendar.sqlite3")
+    store.initialize()
+    company = store.company_for_user("admin@fastfunnel.app")
+    user = store.user_for_email("admin@fastfunnel.app")
+
+    item_id = store.create_scheduled_content(
+        "A governed launch post",
+        "This exact post is approved for the selected calendar slot.",
+        "linkedin",
+        "2026-08-20T09:00:00+00:00",
+        company_id=company["id"],
+        actor_id=user["id"],
+    )
+
+    scheduled = next(
+        item for item in store.list_content(company["id"]) if item["id"] == item_id
+    )
+    assert scheduled["status"] == "scheduled"
+    assert scheduled["approved_by"] == user["id"]
+    assert scheduled["scheduled_for"] == "2026-08-20T09:00:00+00:00"
+
+    store.unschedule_content(
+        item_id,
+        company_id=company["id"],
+        actor_id=user["id"],
+    )
+    approved = next(
+        item for item in store.list_content(company["id"]) if item["id"] == item_id
+    )
+    assert approved["status"] == "approved"
+    assert approved["scheduled_for"] is None
+    with store.connect() as connection:
+        events = {
+            row["event_type"]
+            for row in connection.execute(
+                "SELECT event_type FROM audit_events WHERE object_id=?",
+                (item_id,),
+            ).fetchall()
+        }
+    assert events == {"content.created_and_scheduled", "content.unscheduled"}
+
+
+def test_sidebar_sections_expand_and_collapse_with_catalog_link():
+    from fastfunnel.web.ui import sidebar
+
+    html = str(sidebar("/", {"id": "co_predictivelabs"}, []))
+
+    assert html.count('class="nav-section"') == 6
+    assert 'id="nav-collapse-all"' in html
+    assert 'id="nav-expand-all"' in html
+    assert 'data-section="overview"' in html
+    assert 'data-section="create-ship"' in html
+    assert 'href="/integrations"' in html
+    assert "All integrations" in html
+
+
 def test_api_reads_are_not_public():
     from fastfunnel.web.api import api
 

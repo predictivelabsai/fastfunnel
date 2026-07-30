@@ -35,6 +35,21 @@ def nav_link(label: str, href: str, icon_name: str, active: str) -> A:
     return A(icon(icon_name), Span(label), href=href, cls=f"nav-link{selected}")
 
 
+def nav_section(label: str, section_id: str, *items) -> Details:
+    return Details(
+        Summary(
+            Small(label, cls="nav-label"),
+            Span(cls="nav-section-arrow", aria_hidden="true"),
+            cls="nav-section-toggle",
+            aria_label=f"Expand or collapse {label.title()}",
+        ),
+        Div(*items, cls="nav-section-items"),
+        open=True,
+        cls="nav-section",
+        data_section=section_id,
+    )
+
+
 def sidebar(active: str = "/", company: dict | None = None, workspaces: list[dict] | None = None) -> Aside:
     company = company or {}
     workspaces = workspaces or []
@@ -55,6 +70,23 @@ def sidebar(active: str = "/", company: dict | None = None, workspaces: list[dic
             Div("FF", cls="logo-mark"),
             Div(Strong("FastFunnel"), Small("Autonomous agency")),
             cls="brand",
+        ),
+        Div(
+            Button(
+                "<<",
+                type="button",
+                id="nav-collapse-all",
+                title="Minimise all navigation sections",
+                aria_label="Minimise all navigation sections",
+            ),
+            Button(
+                ">>",
+                type="button",
+                id="nav-expand-all",
+                title="Maximise all navigation sections",
+                aria_label="Maximise all navigation sections",
+            ),
+            cls="nav-section-controls",
         ),
         (
             Form(
@@ -79,32 +111,99 @@ def sidebar(active: str = "/", company: dict | None = None, workspaces: list[dic
             else ""
         ),
         Nav(
-            Small("OVERVIEW", cls="nav-label"),
-            nav_link("Dashboard", "/", "dashboard", active),
-            nav_link("Plan", "/plan", "plan", active),
-            nav_link("Agency", "/agency", "agency", active),
-            Small("CREATE & SHIP", cls="nav-label"),
-            nav_link("Ideas & Content", "/content", "content", active),
-            nav_link("Review", "/review", "review", active),
-            nav_link("Calendar", "/calendar", "calendar", active),
-            Small("ACQUISITION", cls="nav-label"),
-            nav_link("Paid Campaigns", "/campaigns", "campaigns", active),
-            Small("MEASURE", cls="nav-label"),
-            nav_link("Analytics", "/analytics", "analytics", active),
-            nav_link("Growth dashboard", "/analytics/growth", "analytics", active),
-            nav_link("KPI Explorer", "/analytics/explorer", "analytics", active),
-            nav_link("Acquisition Funnel", "/analytics/funnel", "funnel", active),
-            Small("LIBRARY", cls="nav-label"),
-            nav_link("Skills (49)", "/skills", "skills", active),
-            Details(
-                Summary(icon("integrations"), Span("Integrations"), cls="nav-link"),
-                *integration_links,
-                open=active.startswith("/integrations"),
+            nav_section(
+                "OVERVIEW",
+                "overview",
+                nav_link("Dashboard", "/", "dashboard", active),
+                nav_link("Plan", "/plan", "plan", active),
+                nav_link("Agency", "/agency", "agency", active),
             ),
-            Small("SETTINGS", cls="nav-label"),
-            nav_link("Workspace settings", "/settings", "settings", active),
-            nav_link("Team & Invites", "/team", "team", active),
-            nav_link("Developers", "/developers", "integrations", active),
+            nav_section(
+                "CREATE & SHIP",
+                "create-ship",
+                nav_link("Ideas & Content", "/content", "content", active),
+                nav_link("Review", "/review", "review", active),
+                nav_link("Calendar", "/calendar", "calendar", active),
+            ),
+            nav_section(
+                "ACQUISITION",
+                "acquisition",
+                nav_link("Paid Campaigns", "/campaigns", "campaigns", active),
+            ),
+            nav_section(
+                "MEASURE",
+                "measure",
+                nav_link("Analytics", "/analytics", "analytics", active),
+                nav_link("Growth dashboard", "/analytics/growth", "analytics", active),
+                nav_link("KPI Explorer", "/analytics/explorer", "analytics", active),
+                nav_link("Acquisition Funnel", "/analytics/funnel", "funnel", active),
+            ),
+            nav_section(
+                "LIBRARY",
+                "library",
+                nav_link("Skills (49)", "/skills", "skills", active),
+                A(
+                    icon("integrations"),
+                    Span("All integrations"),
+                    href="/integrations",
+                    cls=(
+                        "nav-link active"
+                        if active == "/integrations"
+                        else "nav-link"
+                    ),
+                ),
+                Details(
+                    Summary(
+                        icon("integrations"),
+                        Span("Provider setup"),
+                        cls="nav-link",
+                    ),
+                    *integration_links,
+                    open=active.startswith("/integrations/"),
+                    cls="provider-nav",
+                ),
+            ),
+            nav_section(
+                "SETTINGS",
+                "settings",
+                nav_link("Workspace settings", "/settings", "settings", active),
+                nav_link("Team & Invites", "/team", "team", active),
+                nav_link("Developers", "/developers", "integrations", active),
+            ),
+        ),
+        Script(
+            NotStr(
+                """
+                (() => {
+                  const sections = [...document.querySelectorAll('.nav-section')];
+                  const save = section => localStorage.setItem(
+                    `fastfunnel:nav:${section.dataset.section}`,
+                    section.open ? '1' : '0'
+                  );
+                  sections.forEach(section => {
+                    const stored = localStorage.getItem(
+                      `fastfunnel:nav:${section.dataset.section}`
+                    );
+                    if (stored !== null) section.open = stored === '1';
+                    section.addEventListener('toggle', () => save(section));
+                  });
+                  document.getElementById('nav-collapse-all')?.addEventListener(
+                    'click',
+                    () => sections.forEach(section => {
+                      section.open = false;
+                      save(section);
+                    })
+                  );
+                  document.getElementById('nav-expand-all')?.addEventListener(
+                    'click',
+                    () => sections.forEach(section => {
+                      section.open = true;
+                      save(section);
+                    })
+                  );
+                })();
+                """
+            )
         ),
         cls="sidebar",
     )
