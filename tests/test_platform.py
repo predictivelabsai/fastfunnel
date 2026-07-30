@@ -2,12 +2,20 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 
 from fastfunnel.domain.actions import ActionService
 from fastfunnel.domain.analytics import AnalyticsService
+from fastfunnel.domain.content import ContentService
 from fastfunnel.domain.ingestion import IngestionService
 from fastfunnel.domain.marketing import MarketingService
 from fastfunnel.domain.store import Store, now_iso
+from fastfunnel.domain.workspace import (
+    APITokenPrincipal,
+    APITokenService,
+    SecretVault,
+    WorkspaceConfiguration,
+)
 from fastfunnel.integrations.destinations import FastSMEDestination, GoogleSheetsDestination
 from fastfunnel.integrations.execution import (
     ArcadeProvider,
@@ -16,6 +24,7 @@ from fastfunnel.integrations.execution import (
 )
 from fastfunnel.integrations.sources import BrevoConnector, HubSpotConnector
 from fastfunnel.skills import effective_instructions, save_overlay, skill_for_company
+from fastfunnel.web.api_core import Resource, SQLiteBackend
 
 
 class FakeTransport:
@@ -154,7 +163,8 @@ def test_action_execution_is_payload_bound_idempotent_and_audited(
             return ToolResult("arcade", "LinkedIn.CreatePost", "succeeded", {"id": "post-1"})
 
     monkeypatch.setattr(
-        "fastfunnel.domain.actions.provider_for", lambda _provider: FakeProvider()
+        "fastfunnel.domain.actions.provider_for",
+        lambda _provider, **_kwargs: FakeProvider(),
     )
     assert service.execute(request["id"]) == {"id": "post-1"}
     assert service.execute(request["id"]) == {"id": "post-1"}
@@ -187,6 +197,166 @@ def test_composio_and_arcade_provider_contracts(monkeypatch):
         arguments={"text": "Hello"},
     )
     assert arcade_transport.calls[0]["headers"]["Arcade-User-ID"] == "tenant-user"
+
+
+def test_provider_keys_validate_with_read_only_calls():
+    composio_transport = FakeTransport([{"items": []}])
+    ComposioProvider(
+        composio_transport,
+        api_key="composio-project-key",
+    ).validate_api_key()
+    assert composio_transport.calls[0] == {
+        "method": "GET",
+        "url": "https://backend.composio.dev/api/v3/toolkits?limit=1",
+        "headers": {"x-api-key": "composio-project-key"},
+        "body": None,
+    }
+
+    arcade_transport = FakeTransport([{"items": []}])
+    ArcadeProvider(
+        arcade_transport,
+        api_key="arcade-project-key",
+    ).validate_api_key()
+    assert arcade_transport.calls[0] == {
+        "method": "GET",
+        "url": "https://api.arcade.dev/v1/tools",
+        "headers": {"Authorization": "Bearer arcade-project-key"},
+        "body": None,
+    }
+
+
+def test_workspace_model_settings_and_encrypted_provider_keys(
+    tmp_path: Path,
+    monkeypatch,
+):
+    store = Store(tmp_path / "workspace.sqlite3")
+    store.initialize()
+    company_id = store.default_company_id()
+    configuration = WorkspaceConfiguration(store)
+
+    preferences = configuration.save_model_preferences(
+        company_id=company_id,
+        actor_id="usr_admin",
+        provider="xai",
+        model="grok-4-fast",
+        temperature=0.4,
+    )
+    assert preferences.model == "grok-4-fast"
+    assert preferences.temperature == 0.4
+
+    encryption_key = Fernet.generate_key().decode()
+    monkeypatch.setenv("FASTFUNNEL_ENCRYPTION_KEY", encryption_key)
+    vault = SecretVault(store)
+    status = vault.save_provider_key(
+        company_id=company_id,
+        actor_id="usr_admin",
+        provider="composio",
+        api_key="cmp_test_secret_12345",
+    )
+    assert status["status"] == "validated"
+    assert status["fingerprint"]
+    assert "cmp_test_secret_12345" not in str(status)
+    assert vault.provider_key(company_id, "composio") == "cmp_test_secret_12345"
+    with store.connect() as conn:
+        stored = conn.execute(
+            "SELECT ciphertext FROM integration_secrets WHERE company_id=?",
+            (company_id,),
+        ).fetchone()["ciphertext"]
+        audit = conn.execute(
+            """SELECT details_json FROM audit_events
+               WHERE event_type='integration.credential.updated'"""
+        ).fetchone()["details_json"]
+    assert b"cmp_test_secret_12345" not in stored
+    assert "cmp_test_secret_12345" not in audit
+
+    vault.delete_provider_key(
+        company_id=company_id,
+        actor_id="usr_admin",
+        provider="composio",
+    )
+    assert vault.provider_key(company_id, "composio") is None
+
+
+def test_workspace_api_tokens_are_hashed_tenant_bound_and_revocable(
+    tmp_path: Path,
+):
+    store = Store(tmp_path / "api-tokens.sqlite3")
+    store.initialize()
+    company_id = store.default_company_id()
+    service = APITokenService(store)
+
+    raw_token, metadata = service.issue(
+        company_id=company_id,
+        actor_id="usr_admin",
+        label="FastInsights production",
+        lifetime_days=30,
+    )
+    assert raw_token.startswith("ff_live_")
+    assert raw_token not in str(metadata)
+    assert raw_token not in str(service.list(company_id))
+    principal = service.authenticate(raw_token)
+    assert principal.company_id == company_id
+    assert principal.actor_id == "usr_admin"
+    with store.connect() as conn:
+        stored = conn.execute(
+            "SELECT token_hash FROM api_tokens WHERE id=?",
+            (metadata["id"],),
+        ).fetchone()["token_hash"]
+    assert stored != raw_token
+
+    service.revoke(
+        company_id=company_id,
+        actor_id="usr_admin",
+        token_id=metadata["id"],
+    )
+    assert service.authenticate(raw_token) is None
+
+    other_company, _ = store.ensure_user_workspace("other.api@example.test")
+    backend = SQLiteBackend(
+        store.path,
+        (
+            Resource(
+                "campaigns",
+                "campaigns",
+                "Campaigns",
+                "Tenant campaigns",
+            ),
+        ),
+    )
+    rows, total = backend.list(
+        backend.resources["campaigns"],
+        limit=200,
+        offset=0,
+        query=None,
+        company_id=company_id,
+    )
+    assert rows and total == len(rows)
+    assert {row["company_id"] for row in rows} == {company_id}
+    assert other_company["id"] not in {row["company_id"] for row in rows}
+
+
+def test_content_generation_uses_configured_model_gateway(tmp_path: Path):
+    store = Store(tmp_path / "content-model.sqlite3")
+    store.initialize()
+    company_id = store.default_company_id()
+
+    class FakeGateway:
+        def invoke(self, **kwargs):
+            assert kwargs["company_id"] == company_id
+            assert kwargs["messages"][1][0] == "human"
+            return "A grounded model-generated post."
+
+    item_id = ContentService(store, FakeGateway()).create_draft(
+        company_id=company_id,
+        actor_id="usr_admin",
+        goal="Explain measurable marketing",
+        channel="linkedin",
+    )
+    item = next(
+        item for item in store.list_content(company_id) if item["id"] == item_id
+    )
+    assert item["body"] == "A grounded model-generated post."
+    assert item["status"] == "review"
 
 
 def test_google_sheets_and_fastsme_destination_contracts(monkeypatch):
@@ -274,7 +444,15 @@ def test_account_provisioning_seeds_an_isolated_working_product(tmp_path: Path):
         company_id=company["id"],
         actor_id=user["id"],
     )
-    assert store.list_content(company["id"])[0]["status"] == "scheduled"
+    store.reschedule_content(
+        item_id,
+        "2026-08-02T10:00:00+00:00",
+        company_id=company["id"],
+        actor_id=user["id"],
+    )
+    scheduled = store.list_content(company["id"])[0]
+    assert scheduled["status"] == "scheduled"
+    assert scheduled["scheduled_for"] == "2026-08-02T10:00:00+00:00"
     assert not store.list_content(demo_company_id)
     assert store.dashboard(company["id"])["members"][0]["email"] == user["email"]
     assert store.company_for_user(user["email"])["name"] == "New Owner Marketing"
@@ -292,7 +470,15 @@ def test_api_reads_are_not_public():
 def test_mcp_lists_read_tools_and_proposal_only_activation():
     from fastfunnel.web.api import MCPRequest, mcp_gateway
 
-    response = mcp_gateway(MCPRequest(id=1, method="tools/list"))
+    principal = APITokenPrincipal(
+        company_id="co_predictivelabs",
+        organization_id="org_predictivelabs",
+        actor_id="usr_admin",
+    )
+    response = mcp_gateway(
+        MCPRequest(id=1, method="tools/list"),
+        principal,
+    )
     names = {tool["name"] for tool in response["result"]["tools"]}
     assert names == {
         "fastfunnel_kpis",

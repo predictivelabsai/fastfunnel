@@ -162,7 +162,12 @@ def get_integration(integration_id: str) -> Integration | None:
     return next((item for item in INTEGRATIONS if item.id == integration_id), None)
 
 
-def runtime_readiness(integration_id: str) -> tuple[str, str]:
+def runtime_readiness(
+    integration_id: str,
+    *,
+    store=None,
+    company_id: str | None = None,
+) -> tuple[str, str]:
     """Return executable readiness without overstating static catalog entries."""
     from fastfunnel.integrations.destinations import (
         FastSMEDestination,
@@ -172,6 +177,19 @@ def runtime_readiness(integration_id: str) -> tuple[str, str]:
     from fastfunnel.integrations.marketing import GA4Connector, GoogleAdsConnector
     from fastfunnel.integrations.sources import BrevoConnector, HubSpotConnector
 
+    tenant_key = None
+    if (
+        store is not None
+        and company_id
+        and integration_id in {"composio", "arcade"}
+    ):
+        from fastfunnel.domain.workspace import SecretVault
+
+        vault = SecretVault(store)
+        status = vault.provider_status(company_id, integration_id)
+        if status["status"] == "validated":
+            tenant_key = vault.provider_key(company_id, integration_id)
+
     adapters = {
         "google-ads": GoogleAdsConnector("synthetic"),
         "ga4": GA4Connector(),
@@ -179,8 +197,8 @@ def runtime_readiness(integration_id: str) -> tuple[str, str]:
         "brevo": BrevoConnector("live"),
         "google-sheets": GoogleSheetsDestination(),
         "fastsme": FastSMEDestination(),
-        "composio": ComposioProvider(),
-        "arcade": ArcadeProvider(),
+        "composio": ComposioProvider(api_key=tenant_key),
+        "arcade": ArcadeProvider(api_key=tenant_key),
     }
     adapter = adapters.get(integration_id)
     if adapter:

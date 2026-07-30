@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from fastfunnel.domain.models import ModelGateway
 from fastfunnel.domain.store import Store
 from fastfunnel.skills import effective_instructions, skill_for_company
 
 
 class ContentService:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, model_gateway: ModelGateway | None = None):
         self.store = store
+        self.model_gateway = model_gateway or ModelGateway(store)
 
     def create_draft(
         self,
@@ -28,16 +30,27 @@ class ContentService:
             "channel": channel,
             "goal": goal.strip(),
         }
-        # The effective prompt is composed and auditable even when no model key is
-        # configured. The deterministic fallback keeps local/self-hosted use useful.
         prompt = effective_instructions(skill, context)
         title = f"{channel.title()} · {goal.strip()[:90]}"
-        body = (
-            f"{goal.strip()}\n\n"
-            f"At {company['name']}, we focus on practical implementation: clear ownership, "
-            "measurable outcomes, and systems that teams can inspect and improve.\n\n"
-            "What would make this most useful in your organization?"
+        body = self.model_gateway.invoke(
+            company_id=company_id,
+            messages=(
+                (
+                    "system",
+                    (
+                        f"{prompt}\n\n"
+                        "Draft one publication-ready social post. Return only the post body; "
+                        "do not add analysis, labels, or markdown fences."
+                    ),
+                ),
+                (
+                    "human",
+                    f"Create a {channel} post for this goal: {goal.strip()}",
+                ),
+            ),
         )
+        if not body:
+            raise RuntimeError("The configured model returned an empty draft")
         item_id = self.store.create_content(
             title,
             body,

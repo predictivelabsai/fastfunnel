@@ -2,6 +2,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from fastfunnel import worker
 from fastfunnel.domain.funnels import FunnelStage, sankey_spec
 from fastfunnel.domain.marketing import MarketingService
 from fastfunnel.domain.store import Store
@@ -78,6 +79,42 @@ def test_default_digital_funnel_is_configurable_and_conserved(tmp_path: Path):
     assert MarketingService(store).funnel()["stages"][1].name == "Ad clicks"
 
 
+def test_workspace_admin_can_create_and_select_a_custom_funnel(tmp_path: Path):
+    store = Store(tmp_path / "custom-funnel.sqlite3")
+    store.initialize()
+    company_id = store.default_company_id()
+    service = MarketingService(store)
+    funnel_id = service.save_funnel(
+        company_id=company_id,
+        actor_id="usr_admin",
+        name="Content-led acquisition",
+        description="From useful content to retained customer.",
+        observation_window_days=60,
+        stages=[
+            ("Content views", "Views", "Did not engage"),
+            ("Engaged visits", "Engaged", "No lead"),
+            ("Leads", "Leads", "Not converted"),
+            ("Customers", "Customers", "—"),
+        ],
+        is_default=True,
+    )
+
+    selected = service.funnel(
+        funnel_id=funnel_id,
+        company_id=company_id,
+        days=60,
+    )
+    assert selected["definition"]["is_default"] == 1
+    assert [stage.name for stage in selected["stages"]] == [
+        "Content views",
+        "Engaged visits",
+        "Leads",
+        "Customers",
+    ]
+    assert service.funnel(company_id=company_id)["definition"]["id"] == funnel_id
+    assert len(service.list_funnels(company_id)) == 2
+
+
 def test_connector_readiness_is_honest(monkeypatch):
     for key in GoogleAdsConnector.required_env:
         monkeypatch.delenv(key, raising=False)
@@ -97,3 +134,24 @@ def test_job_enqueue_is_idempotent(tmp_path: Path):
         assert conn.execute("SELECT COUNT(*) FROM job_queue").fetchone()[0] == 1
         available = conn.execute("SELECT available_at FROM job_queue").fetchone()[0]
     assert datetime.fromisoformat(available) <= datetime.now(UTC)
+
+
+def test_worker_claims_and_completes_a_durable_job(
+    tmp_path: Path,
+    monkeypatch,
+):
+    store = Store(tmp_path / "worker.sqlite3")
+    store.initialize()
+    job_id = MarketingService(store).enqueue_sync()
+    monkeypatch.setattr(worker, "store", store)
+
+    assert worker.run_once() is True
+    assert worker.run_once() is False
+    with store.connect() as conn:
+        job = conn.execute(
+            "SELECT * FROM job_queue WHERE id=?",
+            (job_id,),
+        ).fetchone()
+    assert job["status"] == "succeeded"
+    assert job["attempts"] == 1
+    assert job["finished_at"]

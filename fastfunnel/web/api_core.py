@@ -61,6 +61,7 @@ class Resource:
     write_fields: tuple[str, ...] = ()
     search_fields: tuple[str, ...] = ()
     primary_key: str | None = None
+    tenant_field: str | None = "company_id"
 
 
 class SQLiteBackend:
@@ -112,13 +113,21 @@ class SQLiteBackend:
         limit: int,
         offset: int,
         query: str | None,
+        company_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
-        where = ""
+        clauses: list[str] = []
         params: list[Any] = []
+        if company_id and resource.tenant_field:
+            clauses.append(f'"{resource.tenant_field}"=?')
+            params.append(company_id)
         if query and resource.search_fields:
-            clauses = [f'CAST("{field}" AS TEXT) LIKE ?' for field in resource.search_fields]
-            where = " WHERE " + " OR ".join(clauses)
-            params.extend([f"%{query}%"] * len(clauses))
+            search_clauses = [
+                f'CAST("{field}" AS TEXT) LIKE ?'
+                for field in resource.search_fields
+            ]
+            clauses.append("(" + " OR ".join(search_clauses) + ")")
+            params.extend([f"%{query}%"] * len(search_clauses))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self.connection() as connection:
             total = connection.execute(
                 f'SELECT COUNT(*) FROM "{resource.table}"{where}', params
@@ -130,12 +139,25 @@ class SQLiteBackend:
             ).fetchall()
         return [_serialise_row(row) for row in rows], total
 
-    def get(self, resource: Resource, item_id: str) -> dict[str, Any] | None:
+    def get(
+        self,
+        resource: Resource,
+        item_id: str,
+        *,
+        company_id: str | None = None,
+    ) -> dict[str, Any] | None:
         primary_key = self.primary_key(resource)
+        tenant_clause = (
+            f' AND "{resource.tenant_field}"=?'
+            if company_id and resource.tenant_field
+            else ""
+        )
+        params = (item_id, company_id) if tenant_clause else (item_id,)
         with self.connection() as connection:
             row = connection.execute(
-                f'SELECT * FROM "{resource.table}" WHERE "{primary_key}"=?',
-                (item_id,),
+                f'SELECT * FROM "{resource.table}" '
+                f'WHERE "{primary_key}"=?{tenant_clause}',
+                params,
             ).fetchone()
         return _serialise_row(row) if row else None
 
@@ -177,7 +199,7 @@ class SQLiteBackend:
 
 def _serialise_row(row: sqlite3.Row) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for key in row:
+    for key in row.keys():  # noqa: SIM118 - sqlite3.Row iteration yields values
         value = row[key]
         if isinstance(value, bytes):
             value = value.hex()
@@ -285,6 +307,7 @@ def create_sqlite_api(
     backend: SQLiteBackend,
     resources: tuple[Resource, ...],
     public_reads: bool = True,
+    principal_dependency: Callable | None = None,
 ) -> FastAPI:
     """Create the product API and register its typed resource routes."""
 
@@ -313,8 +336,17 @@ def create_sqlite_api(
         CORSMiddleware,
         allow_origins=["*"],
         allow_credentials=False,
-        allow_methods=["GET", "HEAD", "OPTIONS"],
-        allow_headers=["Accept", "Content-Type", "Authorization", "X-FastFunnel-Company"],
+        allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type", "Authorization"],
+    )
+    if not public_reads and principal_dependency is None:
+        raise RuntimeError("Protected APIs require a tenant principal dependency")
+
+    def anonymous_principal():
+        return None
+
+    read_principal = (
+        anonymous_principal if public_reads else principal_dependency
     )
 
     @api.exception_handler(HTTPException)
@@ -346,7 +378,9 @@ def create_sqlite_api(
             status="ok",
             product=product,
             version=version,
-            writes_enabled=bool(os.getenv("FASTSME_API_TOKEN")),
+            writes_enabled=bool(
+                os.getenv("FASTSME_API_TOKEN") or principal_dependency
+            ),
         )
 
     def register(resource: Resource) -> None:
@@ -359,15 +393,23 @@ def create_sqlite_api(
             summary=f"List {resource.title.lower()}",
             description=resource.description,
             operation_id=f"list_{resource.slug.replace('-', '_')}",
-            dependencies=[] if public_reads else [Depends(require_write_token)],
         )
         def list_items(
             limit: int = Query(default=50, ge=1, le=200),
             offset: int = Query(default=0, ge=0),
             q: str | None = Query(default=None, description="Case-insensitive text search"),
+            principal=Depends(read_principal),  # noqa: B008
         ) -> dict[str, Any]:
             rows, total = backend.list(
-                resource, limit=limit, offset=offset, query=q
+                resource,
+                limit=limit,
+                offset=offset,
+                query=q,
+                company_id=(
+                    getattr(principal, "company_id", None)
+                    if principal
+                    else None
+                ),
             )
             return {
                 "data": rows,
@@ -381,10 +423,20 @@ def create_sqlite_api(
             tags=[resource.title],
             summary=f"Get one {resource.title.lower()} record",
             operation_id=f"get_{resource.slug.replace('-', '_')}",
-            dependencies=[] if public_reads else [Depends(require_write_token)],
         )
-        def get_item(item_id: str) -> dict[str, Any]:
-            row = backend.get(resource, item_id)
+        def get_item(
+            item_id: str,
+            principal=Depends(read_principal),  # noqa: B008
+        ) -> dict[str, Any]:
+            row = backend.get(
+                resource,
+                item_id,
+                company_id=(
+                    getattr(principal, "company_id", None)
+                    if principal
+                    else None
+                ),
+            )
             if row is None:
                 raise HTTPException(
                     status_code=404,

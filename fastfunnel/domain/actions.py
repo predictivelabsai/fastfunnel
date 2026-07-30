@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from fastfunnel.domain.store import Store, new_id, now_iso
+from fastfunnel.domain.workspace import SecretVault
 from fastfunnel.integrations.execution import provider_for
 
 WRITE_ACTIONS = {
@@ -230,7 +231,10 @@ class ActionService:
         try:
             payload = json.loads(request["payload_json"])
             tool = payload.pop("tool")
-            result = provider_for(request["provider"]).execute(
+            api_key = SecretVault(self.store).provider_key(
+                request["company_id"], request["provider"]
+            )
+            result = provider_for(request["provider"], api_key=api_key).execute(
                 external_user_id=identity["external_user_id"],
                 connected_account_id=identity["connected_account_id"],
                 tool=tool,

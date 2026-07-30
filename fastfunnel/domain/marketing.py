@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 from datetime import UTC, datetime, timedelta
 
 from fastfunnel.domain.funnels import FunnelStage, sankey_spec
 from fastfunnel.domain.store import Store, new_id, now_iso
+from fastfunnel.domain.workspace import WorkspaceConfiguration
 from fastfunnel.integrations.marketing import GoogleAdsConnector, MarketingReadConnector
 
 DEFAULT_FUNNEL_ID = "fnl_digital_marketing"
@@ -396,6 +398,143 @@ class MarketingService:
                 }
             )
             return result
+
+    def list_funnels(self, company_id: str) -> list[dict]:
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM funnel_definitions
+                   WHERE company_id=?
+                   ORDER BY is_default DESC, name""",
+                (company_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_funnel(
+        self,
+        *,
+        company_id: str,
+        actor_id: str,
+        name: str,
+        description: str,
+        observation_window_days: int,
+        stages: list[tuple[str, str, str]],
+        funnel_id: str | None = None,
+        is_default: bool = False,
+    ) -> str:
+        name = name.strip()
+        description = description.strip()
+        observation_window_days = int(observation_window_days)
+        if not 3 <= len(name) <= 100:
+            raise ValueError("Funnel name must contain 3 to 100 characters")
+        if not 1 <= observation_window_days <= 365:
+            raise ValueError("Observation window must be between 1 and 365 days")
+        if not 2 <= len(stages) <= 12:
+            raise ValueError("A funnel must contain between 2 and 12 stages")
+        cleaned_stages = []
+        for stage_name, short_name, dropoff_name in stages:
+            stage = stage_name.strip()
+            short = short_name.strip() or stage
+            dropoff = dropoff_name.strip() or f"Did not reach {stage}"
+            if not stage or max(len(stage), len(short), len(dropoff)) > 100:
+                raise ValueError("Stage labels must contain 1 to 100 characters")
+            cleaned_stages.append((stage, short, dropoff))
+
+        timestamp = now_iso()
+        slug_base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        with self.store.connect() as conn:
+            company = conn.execute(
+                "SELECT * FROM companies WHERE id=?", (company_id,)
+            ).fetchone()
+            if not company:
+                raise LookupError("Unknown company")
+            WorkspaceConfiguration._require_admin(
+                conn, company["organization_id"], actor_id
+            )
+            if funnel_id:
+                existing = conn.execute(
+                    """SELECT * FROM funnel_definitions
+                       WHERE id=? AND company_id=?""",
+                    (funnel_id, company_id),
+                ).fetchone()
+                if not existing:
+                    raise LookupError("Unknown funnel")
+                slug = existing["slug"]
+                conn.execute(
+                    """UPDATE funnel_definitions
+                       SET name=?, description=?, observation_window_days=?,
+                           is_default=?, updated_at=?
+                       WHERE id=? AND company_id=?""",
+                    (
+                        name,
+                        description,
+                        observation_window_days,
+                        int(is_default),
+                        timestamp,
+                        funnel_id,
+                        company_id,
+                    ),
+                )
+                conn.execute(
+                    "DELETE FROM funnel_stages WHERE funnel_id=?",
+                    (funnel_id,),
+                )
+            else:
+                funnel_id = new_id("fnl")
+                slug = f"{slug_base or 'funnel'}-{funnel_id[-6:]}"
+                conn.execute(
+                    """INSERT INTO funnel_definitions
+                       (id, company_id, name, slug, description, is_default,
+                        observation_window_days, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        funnel_id,
+                        company_id,
+                        name,
+                        slug,
+                        description,
+                        int(is_default),
+                        observation_window_days,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            if is_default:
+                conn.execute(
+                    """UPDATE funnel_definitions SET is_default=0
+                       WHERE company_id=? AND id<>?""",
+                    (company_id, funnel_id),
+                )
+            for position, (stage, short, dropoff) in enumerate(cleaned_stages):
+                conn.execute(
+                    """INSERT INTO funnel_stages
+                       (id, funnel_id, position, name, short_name, dropoff_name,
+                        predicate_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        new_id("fst"),
+                        funnel_id,
+                        position,
+                        stage,
+                        short,
+                        dropoff,
+                        json.dumps({"minimum_stage": position}),
+                    ),
+                )
+            Store._audit(
+                conn,
+                company["organization_id"],
+                company_id,
+                actor_id,
+                "funnel.saved",
+                "funnel",
+                funnel_id,
+                {
+                    "slug": slug,
+                    "stage_count": len(cleaned_stages),
+                    "is_default": is_default,
+                },
+            )
+        return funnel_id
 
     def enqueue_sync(self, company_id: str | None = None) -> str:
         company_id = company_id or self.store.default_company_id()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fasthtml.common import *
 from starlette.responses import JSONResponse, RedirectResponse
@@ -13,13 +14,20 @@ from fastfunnel.domain.actions import ActionService
 from fastfunnel.domain.analytics import BASE_METRICS, AnalyticsService
 from fastfunnel.domain.content import ContentService
 from fastfunnel.domain.marketing import MarketingService
+from fastfunnel.domain.models import ModelGateway
 from fastfunnel.domain.store import store
+from fastfunnel.domain.workspace import (
+    APITokenService,
+    SecretVault,
+    WorkspaceConfiguration,
+)
 from fastfunnel.integrations import (
     CATEGORIES,
     all_integrations,
     get_integration,
     runtime_readiness,
 )
+from fastfunnel.integrations.execution import provider_for
 from fastfunnel.integrations.postmark import PostmarkInvitations
 from fastfunnel.skills import discover_skills, save_overlay, skill_for_company, upstream
 from fastfunnel.web import account_auth, google_auth
@@ -43,6 +51,7 @@ def auth_before(req, sess):
             "/api",
             "/healthz",
             "/developers",
+            "/favicon.ico",
             "/robots.txt",
             "/sitemap.xml",
             "/swagger.json",
@@ -54,16 +63,20 @@ def auth_before(req, sess):
         return RedirectResponse("/", status_code=303)
     tenant_context(sess)
 
+def session_secret() -> str:
+    value = os.getenv("FASTFUNNEL_SESSION_SECRET", "").strip()
+    if value:
+        return value
+    if settings.dev_auth_bypass:
+        return "fastfunnel-local-development-only"
+    raise RuntimeError("FASTFUNNEL_SESSION_SECRET is required outside development")
+
+
 app, rt = fast_app(
-    secret_key=os.getenv("FASTFUNNEL_SESSION_SECRET", "fastfunnel-change-me"),
+    secret_key=session_secret(),
     before=Beforeware(auth_before),
     hdrs=(
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
-        Link(rel="preconnect", href="https://fonts.googleapis.com"),
-        Link(
-            rel="stylesheet",
-            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap",
-        ),
         Link(rel="icon", href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>"),
         Script(src="https://cdn.plot.ly/plotly-2.35.2.min.js"),
         Style((ROOT / "fastfunnel" / "web" / "static" / "app.css").read_text()),
@@ -104,6 +117,22 @@ def developers():
 @rt("/healthz", methods=["GET"])
 def health_check():
     return {"status": "ok"}
+
+
+@rt("/favicon.ico", methods=["GET"])
+def favicon():
+    return Response(
+        """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+        <rect width="32" height="32" rx="7" fill="#f97316"/>
+        <path fill="white" d="M16 4 28 16 16 28 4 16Z"/>
+        <path fill="#f97316" d="M11 10h11v4h-7v3h6v4h-6v5h-4Z"/>
+        </svg>""",
+        media_type="image/svg+xml",
+    )
+
+
+# FastHTML's extension static matcher otherwise captures `/favicon.ico` first.
+app.routes.insert(0, app.routes.pop())
 
 
 def metric(label: str, value: str, note: str):
@@ -510,6 +539,25 @@ def calendar_view(sess):
                         H3(item["title"]),
                         P(item["body"]),
                         Small(f"{item['channel'].title()} · {item['scheduled_for']}"),
+                        (
+                            Form(
+                                Label(
+                                    "Publish at",
+                                    Input(
+                                        type="datetime-local",
+                                        name="scheduled_for",
+                                        value=item["scheduled_for"][:16],
+                                        required=True,
+                                    ),
+                                ),
+                                Button("Update slot", type="submit"),
+                                method="post",
+                                action=f"/calendar/{item['id']}/reschedule",
+                                cls="funnel-filter",
+                            )
+                            if item["status"] == "scheduled"
+                            else ""
+                        ),
                         Form(
                             Select(
                                 Option("Arcade", value="arcade"),
@@ -535,6 +583,31 @@ def calendar_view(sess):
         ),
         active="/calendar",
     )
+
+
+@rt("/calendar/{item_id}/reschedule", methods=["POST"])
+def reschedule_calendar_item(sess, item_id: str, scheduled_for: str):
+    company, user = tenant_context(sess)
+    try:
+        local_time = datetime.fromisoformat(scheduled_for)
+        if local_time.tzinfo is None:
+            local_time = local_time.replace(tzinfo=ZoneInfo(company["timezone"]))
+        utc_time = local_time.astimezone(UTC).replace(microsecond=0)
+        if utc_time <= datetime.now(UTC):
+            raise ValueError("Publication time must be in the future")
+        store.reschedule_content(
+            item_id,
+            utc_time.isoformat(),
+            company_id=company["id"],
+            actor_id=user["id"],
+        )
+    except LookupError as exc:
+        return Response(str(exc), status_code=404)
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+        return Response(str(exc), status_code=422)
+    return RedirectResponse("/calendar", status_code=303)
 
 
 @rt("/publish/{item_id}/propose", methods=["POST"])
@@ -664,10 +737,30 @@ def analytics_view(sess):
 
 
 @rt("/analytics/funnel", methods=["GET"])
-def funnel_view(sess, days: int = 30):
+def funnel_view(
+    sess,
+    days: int = 0,
+    funnel_id: str = "",
+    new: str = "",
+):
     company, _ = tenant_context(sess)
-    days = max(1, min(int(days), 90))
-    result = MarketingService(store).funnel(days=days, company_id=company["id"])
+    marketing = MarketingService(store)
+    funnels = marketing.list_funnels(company["id"])
+    selected_definition = next(
+        (
+            item
+            for item in funnels
+            if item["id"] == funnel_id
+        ),
+        funnels[0],
+    )
+    days = int(days) or int(selected_definition["observation_window_days"])
+    days = max(1, min(days, 365))
+    result = marketing.funnel(
+        funnel_id=funnel_id or None,
+        days=days,
+        company_id=company["id"],
+    )
     definition = result["definition"]
     trace_json = json.dumps([result["trace"]])
     layout_json = json.dumps(
@@ -710,6 +803,20 @@ def funnel_view(sess, days: int = 30):
                 ),
                 Form(
                     Label(
+                        "Funnel",
+                        Select(
+                            *[
+                                Option(
+                                    item["name"],
+                                    value=item["id"],
+                                    selected=item["id"] == definition["id"],
+                                )
+                                for item in funnels
+                            ],
+                            name="funnel_id",
+                        ),
+                    ),
+                    Label(
                         "Window",
                         Select(
                             *[
@@ -718,7 +825,7 @@ def funnel_view(sess, days: int = 30):
                                     value=str(value),
                                     selected=value == days,
                                 )
-                                for value in (7, 14, 30, 60, 90)
+                                for value in sorted({7, 14, 30, 60, 90, days})
                             ],
                             name="days",
                         ),
@@ -749,7 +856,137 @@ def funnel_view(sess, days: int = 30):
             ),
             cls="card",
         ),
+        Div(
+            Div(
+                H2("Funnel definition"),
+                A(
+                    "Create another funnel",
+                    href=f"/analytics/funnel?funnel_id={definition['id']}&new=1",
+                ),
+                cls="section-head",
+            ),
+            Form(
+                (
+                    Input(
+                        type="hidden",
+                        name="funnel_id",
+                        value=definition["id"],
+                    )
+                    if new != "1"
+                    else ""
+                ),
+                Label(
+                    "Name",
+                    Input(
+                        name="name",
+                        value=(
+                            "New marketing funnel"
+                            if new == "1"
+                            else definition["name"]
+                        ),
+                        required=True,
+                    ),
+                ),
+                Label(
+                    "Description",
+                    Input(
+                        name="description",
+                        value=(
+                            "A configurable customer journey."
+                            if new == "1"
+                            else definition["description"]
+                        ),
+                        required=True,
+                    ),
+                ),
+                Label(
+                    "Default observation window",
+                    Input(
+                        type="number",
+                        name="observation_window_days",
+                        value=(
+                            "30"
+                            if new == "1"
+                            else str(definition["observation_window_days"])
+                        ),
+                        min="1",
+                        max="365",
+                        required=True,
+                    ),
+                ),
+                Label(
+                    "Stages · one per line: Name | Short label | Drop-off label",
+                    Textarea(
+                        "\n".join(
+                            f"{stage.name} | {stage.short_name} | {stage.dropoff_name}"
+                            for stage in result["stages"]
+                        ),
+                        name="stage_lines",
+                        required=True,
+                    ),
+                ),
+                Label(
+                    Input(
+                        type="checkbox",
+                        name="is_default",
+                        value="1",
+                        checked=(
+                            new != "1" and bool(definition["is_default"])
+                        ),
+                        style="width:auto",
+                    ),
+                    "Use as the workspace default",
+                ),
+                Button(
+                    "Create funnel" if new == "1" else "Save funnel",
+                    type="submit",
+                ),
+                method="post",
+                action="/analytics/funnel",
+                cls="stack",
+            ),
+            cls="card",
+        ),
         active="/analytics/funnel",
+    )
+
+
+@rt("/analytics/funnel", methods=["POST"])
+def save_funnel_definition(
+    sess,
+    name: str,
+    description: str,
+    observation_window_days: str,
+    stage_lines: str,
+    funnel_id: str = "",
+    is_default: str = "",
+):
+    company, user = tenant_context(sess)
+    stages = []
+    for line in stage_lines.splitlines():
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in line.split("|", 2)]
+        parts.extend([""] * (3 - len(parts)))
+        stages.append((parts[0], parts[1], parts[2]))
+    try:
+        saved_id = MarketingService(store).save_funnel(
+            company_id=company["id"],
+            actor_id=user["id"],
+            funnel_id=funnel_id or None,
+            name=name,
+            description=description,
+            observation_window_days=int(observation_window_days),
+            stages=stages,
+            is_default=is_default == "1",
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except (LookupError, TypeError, ValueError) as exc:
+        return Response(str(exc), status_code=422)
+    return RedirectResponse(
+        f"/analytics/funnel?funnel_id={saved_id}",
+        status_code=303,
     )
 
 
@@ -961,15 +1198,25 @@ def integrations_view():
 
 
 @rt("/integrations/{integration_id}", methods=["GET"])
-def integration_detail_view(sess, integration_id: str):
+def integration_detail_view(sess, integration_id: str, saved: str = ""):
     company, user = tenant_context(sess)
     item = get_integration(integration_id)
     if not item:
         return Response("Integration not found", status_code=404)
-    runtime_status, runtime_reason = runtime_readiness(integration_id)
+    runtime_status, runtime_reason = runtime_readiness(
+        integration_id,
+        store=store,
+        company_id=company["id"],
+    )
     is_stub = runtime_status == "stub"
+    secret_status = (
+        SecretVault(store).provider_status(company["id"], integration_id)
+        if integration_id in {"composio", "arcade"}
+        else None
+    )
     return shell(
         item.name,
+        Div("Credential saved and verified.", cls="notice") if saved == "1" else "",
         Div(
             Div(
                 status_badge(runtime_status),
@@ -984,6 +1231,51 @@ def integration_detail_view(sess, integration_id: str):
             Div(
                 H2("Setup"),
                 P(runtime_reason),
+                (
+                    Form(
+                        Input(
+                            type="hidden",
+                            name="credential_subject",
+                            value=f"{company['id']}:{integration_id}",
+                            autocomplete="username",
+                        ),
+                        Label(
+                            "Project API key",
+                            Input(
+                                type="password",
+                                name="api_key",
+                                required=True,
+                                autocomplete="new-password",
+                                placeholder=f"Paste {item.name} project key",
+                            ),
+                        ),
+                        P(
+                            (
+                                f"Stored securely · fingerprint "
+                                f"{secret_status['fingerprint']}"
+                            )
+                            if secret_status["status"] == "validated"
+                            else "No tenant credential is stored.",
+                            cls="muted",
+                        ),
+                        Button("Save and verify API key", type="submit"),
+                        method="post",
+                        action=f"/integrations/{integration_id}/api-key",
+                        cls="stack",
+                    )
+                    if integration_id in {"composio", "arcade"}
+                    else ""
+                ),
+                (
+                    Form(
+                        Button("Remove stored API key", type="submit", cls="danger"),
+                        method="post",
+                        action=f"/integrations/{integration_id}/api-key/delete",
+                        style="margin-top:12px",
+                    )
+                    if secret_status and secret_status["status"] == "validated"
+                    else ""
+                ),
                 (
                     Form(
                         Label(
@@ -1019,7 +1311,7 @@ def integration_detail_view(sess, integration_id: str):
                     else ""
                 ),
                 Button(
-                    "Not implemented"
+                    "Coming soon"
                     if is_stub
                     else "Connected"
                     if runtime_status == "connected"
@@ -1035,6 +1327,60 @@ def integration_detail_view(sess, integration_id: str):
     )
 
 
+@rt("/integrations/{integration_id}/api-key", methods=["POST"])
+def save_provider_api_key(sess, integration_id: str, api_key: str):
+    if integration_id not in {"composio", "arcade"}:
+        return Response("Unsupported credential provider", status_code=422)
+    company, user = tenant_context(sess)
+    key = api_key.strip()
+    try:
+        with store.connect() as conn:
+            WorkspaceConfiguration._require_admin(
+                conn,
+                company["organization_id"],
+                user["id"],
+            )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    if not SecretVault(store).configured():
+        return Response("Encrypted credential storage is not configured", status_code=503)
+    try:
+        provider_for(integration_id, api_key=key).validate_api_key()
+    except (OSError, RuntimeError, ValueError):
+        return Response("Provider rejected the API key", status_code=422)
+    try:
+        SecretVault(store).save_provider_key(
+            company_id=company["id"],
+            actor_id=user["id"],
+            provider=integration_id,
+            api_key=key,
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except ValueError as exc:
+        return Response(str(exc), status_code=422)
+    return RedirectResponse(
+        f"/integrations/{integration_id}?saved=1",
+        status_code=303,
+    )
+
+
+@rt("/integrations/{integration_id}/api-key/delete", methods=["POST"])
+def delete_provider_api_key(sess, integration_id: str):
+    if integration_id not in {"composio", "arcade"}:
+        return Response("Unsupported credential provider", status_code=422)
+    company, user = tenant_context(sess)
+    try:
+        SecretVault(store).delete_provider_key(
+            company_id=company["id"],
+            actor_id=user["id"],
+            provider=integration_id,
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    return RedirectResponse(f"/integrations/{integration_id}", status_code=303)
+
+
 @rt("/integrations/{integration_id}/identity", methods=["POST"])
 def save_provider_identity(
     sess,
@@ -1044,9 +1390,13 @@ def save_provider_identity(
 ):
     if integration_id not in {"composio", "arcade"}:
         return Response("Unsupported delegated provider", status_code=422)
-    if runtime_readiness(integration_id)[0] != "connected":
-        return Response("Provider API key is not configured", status_code=503)
     company, user = tenant_context(sess)
+    if runtime_readiness(
+        integration_id,
+        store=store,
+        company_id=company["id"],
+    )[0] != "connected":
+        return Response("Provider API key is not configured", status_code=503)
     timestamp = datetime.now(UTC).isoformat()
     with store.connect() as conn:
         conn.execute(
@@ -1107,6 +1457,223 @@ def enqueue_source_sync(sess, integration_id: str, mode: str = "synthetic"):
             ),
         )
     return RedirectResponse(f"/integrations/{integration_id}", status_code=303)
+
+
+@rt("/settings", methods=["GET"])
+def workspace_settings_view(sess, saved: str = ""):
+    company, _ = tenant_context(sess)
+    preferences = WorkspaceConfiguration(store).model_preferences(company["id"])
+    model_status, model_reason = ModelGateway(store).readiness(company["id"])
+    api_tokens = APITokenService(store).list(company["id"])
+    return shell(
+        "Workspace settings",
+        Div("Model settings saved.", cls="notice") if saved == "1" else "",
+        Div(
+            Div(
+                status_badge(model_status),
+                H2("Language model"),
+                P(model_reason),
+                Form(
+                    Label(
+                        "Provider",
+                        Select(
+                            Option(
+                                "xAI",
+                                value="xai",
+                                selected=preferences.provider == "xai",
+                            ),
+                            name="provider",
+                        ),
+                    ),
+                    Label(
+                        "Model",
+                        Input(name="model", value=preferences.model, required=True),
+                    ),
+                    Label(
+                        "Temperature",
+                        Input(
+                            type="number",
+                            name="temperature",
+                            value=str(preferences.temperature),
+                            min="0",
+                            max="2",
+                            step="0.1",
+                            required=True,
+                        ),
+                    ),
+                    Button("Save model settings", type="submit"),
+                    method="post",
+                    action="/settings/model",
+                    cls="stack",
+                ),
+                cls="card",
+            ),
+            Div(
+                H2("Hosted product security"),
+                P("Model keys are deployment secrets and are never rendered in this UI."),
+                P(
+                    "Composio and Arcade project keys are stored per workspace with "
+                    "authenticated encryption. Connected social accounts are authorized "
+                    "separately for each user."
+                ),
+                cls="card",
+            ),
+            cls="grid two",
+        ),
+        Div(
+            H2("Workspace API tokens"),
+            P(
+                "Private API and MCP calls use revocable tokens bound to this "
+                "workspace. Raw tokens are shown once and never stored."
+            ),
+            Form(
+                Label(
+                    "Token label",
+                    Input(
+                        name="label",
+                        placeholder="FastInsights production",
+                        required=True,
+                    ),
+                ),
+                Label(
+                    "Lifetime",
+                    Select(
+                        Option("30 days", value="30"),
+                        Option("90 days", value="90", selected=True),
+                        Option("180 days", value="180"),
+                        Option("365 days", value="365"),
+                        name="lifetime_days",
+                    ),
+                ),
+                Button("Create workspace token", type="submit"),
+                method="post",
+                action="/settings/api-tokens",
+                cls="stack",
+            ),
+            (
+                Table(
+                    Thead(
+                        Tr(
+                            Th("Label"),
+                            Th("Fingerprint"),
+                            Th("Expires"),
+                            Th("Last used"),
+                            Th("Action"),
+                        )
+                    ),
+                    Tbody(
+                        *[
+                            Tr(
+                                Td(token["label"]),
+                                Td(token["fingerprint"]),
+                                Td(token["expires_at"][:10]),
+                                Td(
+                                    token["last_used_at"][:19]
+                                    if token["last_used_at"]
+                                    else "Never"
+                                ),
+                                Td(
+                                    status_badge("revoked")
+                                    if token["revoked_at"]
+                                    else Form(
+                                        Button(
+                                            "Revoke",
+                                            type="submit",
+                                            cls="danger",
+                                        ),
+                                        method="post",
+                                        action=(
+                                            f"/settings/api-tokens/{token['id']}/revoke"
+                                        ),
+                                    )
+                                ),
+                            )
+                            for token in api_tokens
+                        ]
+                    ),
+                    cls="table",
+                )
+                if api_tokens
+                else Div("No API tokens have been created.", cls="empty")
+            ),
+            cls="card",
+        ),
+        active="/settings",
+    )
+
+
+@rt("/settings/model", methods=["POST"])
+def save_workspace_model(
+    sess,
+    provider: str,
+    model: str,
+    temperature: str,
+):
+    company, user = tenant_context(sess)
+    try:
+        WorkspaceConfiguration(store).save_model_preferences(
+            company_id=company["id"],
+            actor_id=user["id"],
+            provider=provider,
+            model=model,
+            temperature=float(temperature),
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except (TypeError, ValueError) as exc:
+        return Response(str(exc), status_code=422)
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@rt("/settings/api-tokens", methods=["POST"])
+def create_workspace_api_token(
+    sess,
+    label: str,
+    lifetime_days: str,
+):
+    company, user = tenant_context(sess)
+    try:
+        token, metadata = APITokenService(store).issue(
+            company_id=company["id"],
+            actor_id=user["id"],
+            label=label,
+            lifetime_days=int(lifetime_days),
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except (LookupError, TypeError, ValueError) as exc:
+        return Response(str(exc), status_code=422)
+    return shell(
+        "API token created",
+        Div(
+            status_badge("connected"),
+            H2("Copy this token now"),
+            P(
+                f"{metadata['label']} · expires {metadata['expires_at'][:10]}. "
+                "For security, FastFunnel cannot show it again."
+            ),
+            Pre(Code(token)),
+            A("Return to workspace settings", href="/settings", cls="btn"),
+            cls="card",
+        ),
+        active="/settings",
+    )
+
+
+@rt("/settings/api-tokens/{token_id}/revoke", methods=["POST"])
+def revoke_workspace_api_token(sess, token_id: str):
+    company, user = tenant_context(sess)
+    try:
+        APITokenService(store).revoke(
+            company_id=company["id"],
+            actor_id=user["id"],
+            token_id=token_id,
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except LookupError as exc:
+        return Response(str(exc), status_code=404)
+    return RedirectResponse("/settings", status_code=303)
 
 
 @rt("/team", methods=["GET"])

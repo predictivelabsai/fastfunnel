@@ -20,6 +20,7 @@ def icon(name: str) -> Span:
         "dashboard": "⌂", "plan": "◇", "agency": "✦", "content": "✎",
         "review": "✓", "calendar": "□", "campaigns": "◎", "analytics": "⌁",
         "funnel": "▽", "skills": "⚡", "integrations": "⌘", "team": "♙",
+        "settings": "⚙",
     }
     return Span(glyphs.get(name, "·"), cls="nav-icon")
 
@@ -33,7 +34,10 @@ def sidebar(active: str = "/") -> Aside:
     integration_links = [
         A(
             Span(item.name),
-            Span(item.status, cls=f"tiny-status {item.status}"),
+            Span(
+                "Coming soon" if item.status == "stub" else item.status,
+                cls=f"tiny-status {item.status}",
+            ),
             href=f"/integrations/{item.id}",
             cls="nav-link nested",
         )
@@ -68,6 +72,7 @@ def sidebar(active: str = "/") -> Aside:
                 open=active.startswith("/integrations"),
             ),
             Small("SETTINGS", cls="nav-label"),
+            nav_link("Workspace settings", "/settings", "settings", active),
             nav_link("Team & Invites", "/team", "team", active),
             nav_link("Developers", "/developers", "integrations", active),
         ),
@@ -136,7 +141,8 @@ def assistant_rail(company_name: str = "your workspace"):
 
 
 def status_badge(status: str):
-    return Span(status.replace("-", " "), cls=f"status {status}")
+    label = "Coming soon" if status == "stub" else status.replace("-", " ")
+    return Span(label, cls=f"status {status}")
 
 
 def integration_group_counts():

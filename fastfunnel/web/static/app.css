@@ -42,7 +42,7 @@ details summary { list-style: none; cursor: pointer; }
 .page-content { padding: 26px 28px 60px; }
 .hero { display: flex; align-items: flex-end; justify-content: space-between; padding: 28px; border-radius: 18px; background: linear-gradient(120deg, var(--mint), #f8ffe8); box-shadow: var(--shadow); }
 .hero h2 { max-width: 600px; font-size: 30px; margin-bottom: 8px; }
-.grid { display: grid; gap: 16px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .grid.metrics { grid-template-columns: repeat(4, 1fr); margin: 18px 0; }
 .grid.two { grid-template-columns: 1.25fr .75fr; }
 .cards { grid-template-columns: repeat(3, 1fr); }
@@ -51,11 +51,16 @@ details summary { list-style: none; cursor: pointer; }
 .metric .delta { color: var(--green); font-size: 11px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; margin: 28px 0 12px; }
 .btn, button { display: inline-flex; justify-content: center; border: 0; border-radius: 9px; padding: 10px 14px; background: #173d2c; color: white; cursor: pointer; font-weight: 700; }
+button.danger { background: #8b2f2f; }
+button:disabled { cursor: not-allowed; opacity: .68; }
 .btn.secondary { background: var(--wash); color: var(--ink); border: 1px solid var(--line); }
 input, textarea, select { width: 100%; padding: 11px; border: 1px solid #cfdad3; border-radius: 9px; background: white; color: var(--ink); font: inherit; }
 textarea { min-height: 130px; resize: vertical; }
+pre { overflow-x: auto; padding: 14px; border-radius: 9px; background: var(--wash); }
 label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 form.stack { display: grid; gap: 13px; }
+.notice { margin-bottom: 14px; padding: 11px 13px; border-radius: 9px; background: var(--mint); color: #145d37; }
+.notice.error { background: #fff0ed; color: #8b2f2f; }
 .table { width: 100%; border-collapse: collapse; }
 .table th, .table td { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 .table th { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }

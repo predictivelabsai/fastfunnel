@@ -78,9 +78,11 @@ class Store:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA journal_mode = WAL")
         try:
             yield conn
             conn.commit()
@@ -480,6 +482,50 @@ class Store:
                 "content",
                 item_id,
                 {"scheduled_for": scheduled_for, "bounded_autonomy": True},
+            )
+
+    def reschedule_content(
+        self,
+        item_id: str,
+        scheduled_for: str,
+        *,
+        company_id: str,
+        actor_id: str,
+    ) -> None:
+        with self.connect() as conn:
+            item = conn.execute(
+                """SELECT content_items.*, companies.organization_id
+                   FROM content_items JOIN companies
+                     ON companies.id=content_items.company_id
+                   WHERE content_items.id=? AND content_items.company_id=?""",
+                (item_id, company_id),
+            ).fetchone()
+            if not item or item["status"] != "scheduled":
+                raise LookupError("Scheduled content not found")
+            membership = conn.execute(
+                """SELECT 1 FROM memberships
+                   WHERE organization_id=? AND user_id=?""",
+                (item["organization_id"], actor_id),
+            ).fetchone()
+            if not membership:
+                raise PermissionError("Workspace membership required")
+            conn.execute(
+                """UPDATE content_items SET scheduled_for=?, updated_at=?
+                   WHERE id=? AND company_id=?""",
+                (scheduled_for, now_iso(), item_id, company_id),
+            )
+            self._audit(
+                conn,
+                item["organization_id"],
+                company_id,
+                actor_id,
+                "content.rescheduled",
+                "content",
+                item_id,
+                {
+                    "previous_scheduled_for": item["scheduled_for"],
+                    "scheduled_for": scheduled_for,
+                },
             )
 
     def invite(

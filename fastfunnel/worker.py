@@ -16,6 +16,7 @@ from fastfunnel.integrations.sources import BrevoConnector, GA4SourceConnector, 
 
 def run_once() -> bool:
     with store.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         job = conn.execute(
             """SELECT * FROM job_queue
                WHERE status='pending' AND available_at<=?

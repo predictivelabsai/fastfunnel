@@ -24,8 +24,10 @@ The first slice provides:
 - a connector boundary with synthetic, Google Ads, and GA4-ready adapters;
 - replayable HubSpot, Brevo, and GA4 ingestion with immutable raw extracts;
 - tenant-editable overlays over the immutable pinned Marketing Skills library;
+- tenant-scoped xAI model preferences behind a LangChain `ChatXAI` boundary;
 - a typed KPI explorer and Google Sheets/FastSME destination boundary;
-- Composio and Arcade execution adapters with per-tenant/user identities;
+- Composio and Arcade execution adapters with encrypted per-tenant project
+  keys and per-tenant/user connected-account identities;
 - the existing approval and audit boundary, with durable provider-action
   idempotency required before external mutations are enabled;
 - a UI kept visually close to the existing cockpit while replacing static
@@ -109,6 +111,8 @@ fastfunnel/
 │   ├── ingestion.py          # raw extracts, cursors, replay, normalization
 │   ├── analytics.py          # KPI semantics, explorer, saved queries, exports
 │   ├── content.py            # skill-grounded draft creation
+│   ├── models.py             # LangChain/xAI model boundary
+│   ├── workspace.py          # model preferences and encrypted key vault
 │   ├── actions.py            # governed external action lifecycle
 │   └── funnels.py            # funnel evaluator and Sankey projection
 ├── integrations/
@@ -119,7 +123,8 @@ fastfunnel/
 │   ├── registry.py           # honest integration capability registry
 │   └── postmark.py           # transactional email adapter
 ├── agents/                   # typed application tools only
-└── worker.py                 # worker process entry point
+├── worker.py                 # worker process entry point
+└── runtime.py                # production web + worker process supervisor
 ```
 
 These modules form the current modular-monolith seam. As the application layer
@@ -321,9 +326,12 @@ flowchart LR
 ```
 
 The token-gated `/api/mcp` JSON-RPC gateway exposes KPI and funnel reads plus
-an activation-proposal tool. The activation tool can propose publication,
-conversion upload, or audience synchronization, but it cannot execute them;
-the normal approval and worker sequence remains mandatory.
+an activation-proposal tool. Workspace API tokens are random, stored only as
+hashes, tenant-bound, expiring, and revocable. Tenant identity comes from the
+token principal rather than caller-supplied `company_id` or actor fields. The
+activation tool can propose publication, conversion upload, or audience
+synchronization, but it cannot execute them; the normal approval and worker
+sequence remains mandatory.
 
 ## Configurable funnel and Sankey calculation
 
@@ -479,6 +487,9 @@ The following names match the current SQLite schema.
 | `companies` | Current workspace/client scope, timezone, currency, and profile. |
 | `users`, `memberships` | Actor identity and organization role. |
 | `integration_connections` | Provider, capability, honest state, account binding, secret reference; never raw credentials. |
+| `workspace_settings` | Tenant-selected model provider, model name, and temperature. |
+| `integration_secrets` | Fernet-encrypted Composio/Arcade project keys, validation state, and non-secret fingerprint. |
+| `api_tokens` | Hashed, expiring, revocable workspace API principals; raw tokens are shown once. |
 | `platform_accounts`, `data_sources` | Provider account hierarchy and tenant source configuration. |
 | `sync_cursors`, `raw_extracts` | Incremental watermarks and immutable replay input. |
 | `sync_runs` | Source, requested window, status, counts, freshness, cursor, and error. |
@@ -497,21 +508,26 @@ The following names match the current SQLite schema.
 | `audit_events` | Append-only actor, tenant, event, object, decision, and details. |
 
 The mutation schema implements `action_requests` and `action_executions` in
-addition to `approvals` and `audit_events`. Composio and Arcade execute only
-from the worker after membership, exact-payload approval, tenant identity, and
-prior-success checks pass.
+addition to `approvals` and `audit_events`. Composio and Arcade credentials are
+accepted only after a read-only provider validation, encrypted using
+`FASTFUNNEL_ENCRYPTION_KEY`, and never returned to a view model or audit event.
+They execute only from the worker after membership, exact-payload approval,
+tenant identity, and prior-success checks pass.
 
-Foreign keys are enabled for every SQLite connection. Migrations are monotonic
-and versioned. Database initialization never relies on a large mutable
-`CREATE TABLE` string as the long-term migration strategy.
+Foreign keys, WAL mode, and a busy timeout are enabled for every SQLite
+connection so the web and worker processes can share the durable store.
+Schema versions are recorded monotonically; an explicit migration runner
+remains a required hardening step before replacing the current idempotent DDL
+bootstrap.
 
 ## System invariants
 
 These rules define a functional backend:
 
 1. **Tenant isolation:** no unscoped business query or command.
-2. **Honest integrations:** `stub`, `available`, and `connected` describe
-   executable reality.
+2. **Honest integrations:** internal `stub`, `available`, and `connected`
+   states describe executable reality; the UI renders `stub` as
+   **Coming soon**.
 3. **Repeatable ingestion:** the same source partition and cursor cannot create
    duplicate facts.
 4. **Provenance:** every displayed metric can identify source, sync run, source
@@ -545,7 +561,9 @@ uv run python -m fastfunnel.app
 ```
 
 It listens on port `5005` by default. The SQLite location is controlled by
-`FASTFUNNEL_DB_PATH` and defaults to `data/fastfunnel.sqlite3`.
+`FASTFUNNEL_DB_PATH` and defaults to `data/fastfunnel.sqlite3`. Production
+additionally requires `FASTFUNNEL_SESSION_SECRET`; tenant Composio/Arcade
+credential storage requires `FASTFUNNEL_ENCRYPTION_KEY`.
 
 Run the worker in a separate terminal:
 
@@ -589,10 +607,12 @@ contracts:
 8. Introduce live provider mutations one action class at a time, with adapter
    contract tests and default dry-run or paused behavior.
 
-Deployment may run the web and worker as separate services from the same
-versioned image. A release is healthy only when migrations have completed, the
-web health check passes, the worker is polling, queue lag is bounded, and the
-synthetic smoke funnel produces a conserved graph.
+The production image supervises the web and worker as separate OS processes in
+one container so both share the same mounted SQLite volume. Docker Compose may
+run the same entry points as two services using its shared named volume. A
+release is healthy only when initialization has completed, the web health
+check passes, the worker is polling, queue lag is bounded, and the synthetic
+smoke funnel produces a conserved graph.
 
 ## Definition of done for the first slice
 

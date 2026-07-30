@@ -17,4 +17,4 @@ COPY third_party ./third_party
 RUN uv sync --frozen --no-dev
 
 EXPOSE 5005
-CMD ["uv", "run", "--no-sync", "python", "-m", "fastfunnel.app"]
+CMD ["uv", "run", "--no-sync", "python", "-m", "fastfunnel.runtime"]

@@ -3,7 +3,8 @@
 import json
 from typing import Any
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, Security, status
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
 from fastfunnel.config import settings
@@ -11,12 +12,16 @@ from fastfunnel.domain.actions import ActionService
 from fastfunnel.domain.analytics import AnalyticsService
 from fastfunnel.domain.marketing import MarketingService
 from fastfunnel.domain.store import store
+from fastfunnel.domain.workspace import (
+    APITokenPrincipal,
+    APITokenService,
+)
 
 from .api_core import (
     Resource,
     SQLiteBackend,
+    bearer,
     create_sqlite_api,
-    require_write_token,
 )
 
 RESOURCES = (
@@ -33,11 +38,32 @@ RESOURCES = (
 )
 
 backend = SQLiteBackend(settings.database_path, RESOURCES, initialize=store.initialize)
+
+
+def tenant_principal(
+    credentials: HTTPAuthorizationCredentials | None = Security(bearer),  # noqa: B008
+) -> APITokenPrincipal:
+    supplied = credentials.credentials if credentials else ""
+    principal = APITokenService(store).authenticate(supplied) if supplied else None
+    if not principal:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "invalid_token",
+                "message": "A valid workspace API token is required.",
+                "details": {},
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
+
+
 api = create_sqlite_api(
     product="FastFunnel", version="1.0.0",
     description="Tenant-protected integration access to campaigns, content, analytics, and journeys.",
     base_url="https://funnel.fastsme.com", backend=backend, resources=RESOURCES,
     public_reads=False,
+    principal_dependency=tenant_principal,
 )
 
 
@@ -50,14 +76,26 @@ class ContentDraft(BaseModel):
 @api.post(
     "/v1/content",
     status_code=201,
-    dependencies=[Depends(require_write_token)],
     tags=["Content"],
 )
-def create_content_draft(payload: ContentDraft):
+def create_content_draft(
+    payload: ContentDraft,
+    principal: APITokenPrincipal = Depends(tenant_principal),  # noqa: B008
+):
     """Create content in review state through FastFunnel's audited policy path."""
 
-    item_id = store.create_content(payload.title, payload.body, payload.channel)
-    return backend.get(RESOURCES[1], item_id)
+    item_id = store.create_content(
+        payload.title,
+        payload.body,
+        payload.channel,
+        company_id=principal.company_id,
+        actor_id=principal.actor_id,
+    )
+    return backend.get(
+        RESOURCES[1],
+        item_id,
+        company_id=principal.company_id,
+    )
 
 
 class MCPRequest(BaseModel):
@@ -73,8 +111,7 @@ MCP_TOOLS = (
         "description": "Read governed KPI values for one company workspace.",
         "inputSchema": {
             "type": "object",
-            "properties": {"company_id": {"type": "string"}},
-            "required": ["company_id"],
+            "properties": {},
         },
     },
     {
@@ -83,10 +120,8 @@ MCP_TOOLS = (
         "inputSchema": {
             "type": "object",
             "properties": {
-                "company_id": {"type": "string"},
                 "days": {"type": "integer", "minimum": 1, "maximum": 90},
             },
-            "required": ["company_id"],
         },
     },
     {
@@ -98,8 +133,6 @@ MCP_TOOLS = (
         "inputSchema": {
             "type": "object",
             "properties": {
-                "company_id": {"type": "string"},
-                "actor_id": {"type": "string"},
                 "action_type": {
                     "type": "string",
                     "enum": ["content.publish", "conversion.upload", "audience.sync"],
@@ -111,8 +144,6 @@ MCP_TOOLS = (
                 "idempotency_key": {"type": "string"},
             },
             "required": [
-                "company_id",
-                "actor_id",
                 "action_type",
                 "provider",
                 "object_type",
@@ -126,10 +157,12 @@ MCP_TOOLS = (
 
 @api.post(
     "/mcp",
-    dependencies=[Depends(require_write_token)],
     tags=["MCP"],
 )
-def mcp_gateway(request: MCPRequest):
+def mcp_gateway(
+    request: MCPRequest,
+    principal: APITokenPrincipal = Depends(tenant_principal),  # noqa: B008
+):
     """Small Streamable-HTTP-compatible JSON-RPC surface for governed agents."""
     if request.method == "initialize":
         result = {
@@ -143,10 +176,10 @@ def mcp_gateway(request: MCPRequest):
         name = request.params.get("name")
         arguments = request.params.get("arguments", {})
         if name == "fastfunnel_kpis":
-            data = AnalyticsService(store).kpis(arguments["company_id"])
+            data = AnalyticsService(store).kpis(principal.company_id)
         elif name == "fastfunnel_funnel":
             funnel = MarketingService(store).funnel(
-                company_id=arguments["company_id"],
+                company_id=principal.company_id,
                 days=int(arguments.get("days", 30)),
             )
             data = {
@@ -157,8 +190,8 @@ def mcp_gateway(request: MCPRequest):
             }
         elif name == "fastfunnel_propose_activation":
             data = ActionService(store).propose(
-                company_id=arguments["company_id"],
-                actor_id=arguments["actor_id"],
+                company_id=principal.company_id,
+                actor_id=principal.actor_id,
                 action_type=arguments["action_type"],
                 provider=arguments["provider"],
                 object_type=arguments["object_type"],

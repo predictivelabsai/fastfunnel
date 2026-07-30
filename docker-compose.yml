@@ -1,6 +1,7 @@
 services:
   fastfunnel:
     build: .
+    command: ["uv", "run", "--no-sync", "python", "-m", "fastfunnel.app"]
     ports:
       - "5005:5005"
     env_file:

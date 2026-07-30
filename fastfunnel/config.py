@@ -18,7 +18,10 @@ class Settings:
     admin_email: str = os.getenv("FASTFUNNEL_ADMIN_EMAIL", "admin@fastfunnel.app")
     seed_company: str = os.getenv("FASTFUNNEL_SEED_COMPANY", "Predictive Labs")
     seed_domain: str = os.getenv("FASTFUNNEL_SEED_DOMAIN", "predictivelabs.ai")
-    postmark_token: str = os.getenv("POSTMARK_SERVER_TOKEN", "")
+    postmark_token: str = os.getenv(
+        "POSTMARK_SERVER_TOKEN",
+        os.getenv("POSTMARK_API_TOKEN", ""),
+    )
     base_url: str = os.getenv("FASTFUNNEL_BASE_URL", "http://127.0.0.1:5005")
 
 

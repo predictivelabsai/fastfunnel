@@ -21,13 +21,25 @@ class ExecutionProvider:
     provider: str
     api_key_env: str
 
-    def __init__(self, transport: JSONTransport | None = None):
+    def __init__(
+        self,
+        transport: JSONTransport | None = None,
+        api_key: str | None = None,
+    ):
         self.transport = transport or UrllibJSONTransport()
+        self.api_key = api_key
 
     def readiness(self) -> tuple[str, str]:
-        if not os.getenv(self.api_key_env):
+        if not self._key():
             return "available", f"Adapter implemented; set {self.api_key_env} to connect"
         return "connected", "API key configured"
+
+    def _key(self) -> str:
+        return (self.api_key or os.getenv(self.api_key_env, "")).strip()
+
+    def validate_api_key(self) -> None:
+        """Perform a read-only provider request before accepting a credential."""
+        raise NotImplementedError
 
     def execute(
         self,
@@ -50,6 +62,17 @@ class ComposioProvider(ExecutionProvider):
     provider = "composio"
     api_key_env = "COMPOSIO_API_KEY"
 
+    def validate_api_key(self) -> None:
+        key = self._key()
+        if not key:
+            raise ValueError("Composio API key is required")
+        base = os.getenv("COMPOSIO_API_BASE", "https://backend.composio.dev/api/v3")
+        self.transport.request(
+            "GET",
+            f"{base.rstrip('/')}/toolkits?limit=1",
+            headers={"x-api-key": key},
+        )
+
     def execute(
         self,
         *,
@@ -58,7 +81,9 @@ class ComposioProvider(ExecutionProvider):
         arguments: dict[str, Any],
         connected_account_id: str | None = None,
     ) -> ToolResult:
-        key = os.environ[self.api_key_env]
+        key = self._key()
+        if not key:
+            raise RuntimeError("Composio API key is not configured")
         base = os.getenv("COMPOSIO_API_BASE", "https://backend.composio.dev/api/v3")
         session = self.transport.request(
             "POST",
@@ -89,6 +114,17 @@ class ArcadeProvider(ExecutionProvider):
     provider = "arcade"
     api_key_env = "ARCADE_API_KEY"
 
+    def validate_api_key(self) -> None:
+        key = self._key()
+        if not key:
+            raise ValueError("Arcade API key is required")
+        base = os.getenv("ARCADE_API_BASE", "https://api.arcade.dev/v1")
+        self.transport.request(
+            "GET",
+            f"{base.rstrip('/')}/tools",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+
     def execute(
         self,
         *,
@@ -97,7 +133,9 @@ class ArcadeProvider(ExecutionProvider):
         arguments: dict[str, Any],
         connected_account_id: str | None = None,
     ) -> ToolResult:
-        key = os.environ[self.api_key_env]
+        key = self._key()
+        if not key:
+            raise RuntimeError("Arcade API key is not configured")
         base = os.getenv("ARCADE_API_BASE", "https://api.arcade.dev/v1")
         receipt = self.transport.request(
             "POST",
@@ -116,12 +154,16 @@ class ArcadeProvider(ExecutionProvider):
         return ToolResult(self.provider, tool, "succeeded", receipt)
 
 
-def provider_for(name: str, transport: JSONTransport | None = None) -> ExecutionProvider:
+def provider_for(
+    name: str,
+    transport: JSONTransport | None = None,
+    api_key: str | None = None,
+) -> ExecutionProvider:
     providers = {
         "composio": ComposioProvider,
         "arcade": ArcadeProvider,
     }
     try:
-        return providers[name](transport)
+        return providers[name](transport, api_key)
     except KeyError as exc:
         raise LookupError(f"Unsupported execution provider: {name}") from exc

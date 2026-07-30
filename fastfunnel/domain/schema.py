@@ -1,6 +1,6 @@
 """Versioned SQLite schema for the operational marketing backend."""
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 DDL = """
 PRAGMA foreign_keys = ON;
@@ -21,6 +21,48 @@ CREATE TABLE IF NOT EXISTS integration_connections (
     created_at TEXT NOT NULL,
     UNIQUE(company_id, provider)
 );
+
+CREATE TABLE IF NOT EXISTS workspace_settings (
+    company_id TEXT PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+    model_provider TEXT NOT NULL DEFAULT 'xai',
+    model_name TEXT NOT NULL DEFAULT 'grok-4-1-fast-reasoning',
+    model_temperature REAL NOT NULL DEFAULT 0.2,
+    updated_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS integration_secrets (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    secret_name TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'validated',
+    last_validated_at TEXT,
+    validation_error TEXT,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    updated_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, provider, secret_name)
+);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    fingerprint TEXT NOT NULL,
+    actor_id TEXT NOT NULL REFERENCES users(id),
+    expires_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_api_tokens_company
+    ON api_tokens(company_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS sync_runs (
     id TEXT PRIMARY KEY,
