@@ -97,9 +97,9 @@ class SQLiteBackend:
         with self.connection() as connection:
             if self.store is not None and self.store.database_url:
                 rows = connection.execute(
-                    """SELECT column_name name, data_type type,
-                              CASE WHEN is_nullable='NO' THEN 1 ELSE 0 END notnull,
-                              column_default dflt_value,
+                    """SELECT column_name AS "name", data_type AS "type",
+                              CASE WHEN is_nullable='NO' THEN 1 ELSE 0 END AS "notnull",
+                              column_default AS "dflt_value",
                               CASE WHEN column_name IN (
                                 SELECT kcu.column_name
                                 FROM information_schema.table_constraints tc
@@ -109,7 +109,7 @@ class SQLiteBackend:
                                 WHERE tc.constraint_type='PRIMARY KEY'
                                   AND tc.table_schema='public'
                                   AND tc.table_name=?
-                              ) THEN 1 ELSE 0 END pk
+                              ) THEN 1 ELSE 0 END AS "pk"
                        FROM information_schema.columns
                        WHERE table_schema='public' AND table_name=?
                        ORDER BY ordinal_position""",
