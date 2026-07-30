@@ -117,6 +117,13 @@ account_auth.register_fasthtml_routes(
 )
 
 
+@rt("/auth/logout", methods=["POST"])
+def logout(sess):
+    """End the complete product session and return to the public landing page."""
+    sess.clear()
+    return RedirectResponse("/", status_code=303)
+
+
 @rt("/swagger.json", methods=["GET"])
 def swagger_schema():
     return JSONResponse(api.openapi())

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fastfunnel.agents import build_agency_graph
-from fastfunnel.app import app, auth_before
+from fastfunnel.app import app, auth_before, logout
 from fastfunnel.domain.store import Store
 from fastfunnel.integrations import all_integrations, get_integration
 from fastfunnel.integrations.postmark import PostmarkInvitations
@@ -72,6 +72,21 @@ def test_content_and_approval_routes_are_method_scoped():
         set(route.methods) for route in app.routes if getattr(route, "path", "") == "/content"
     ]
     assert methods_by_path["/review/{item_id}/approve"] == {"POST"}
+    assert methods_by_path["/auth/logout"] == {"POST"}
+
+
+def test_logout_clears_the_complete_session():
+    session = {
+        "user_email": "person@example.com",
+        "company_id": "co_example",
+        "google_oauth_state": "temporary-state",
+    }
+
+    response = logout(session)
+
+    assert session == {}
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
 
 
 def test_search_discovery_routes_are_public():

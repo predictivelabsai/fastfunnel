@@ -25,7 +25,7 @@ def icon(name: str) -> Span:
         "dashboard": "⌂", "plan": "◇", "agency": "✦", "content": "✎",
         "review": "✓", "calendar": "□", "campaigns": "◎", "analytics": "⌁",
         "funnel": "▽", "skills": "⚡", "integrations": "⌘", "team": "♙",
-        "settings": "⚙",
+        "settings": "⚙", "logout": "↪",
     }
     return Span(glyphs.get(name, "·"), cls="nav-icon")
 
@@ -50,9 +50,15 @@ def nav_section(label: str, section_id: str, *items) -> Details:
     )
 
 
-def sidebar(active: str = "/", company: dict | None = None, workspaces: list[dict] | None = None) -> Aside:
+def sidebar(
+    active: str = "/",
+    company: dict | None = None,
+    workspaces: list[dict] | None = None,
+    user: dict | None = None,
+) -> Aside:
     company = company or {}
     workspaces = workspaces or []
+    user = user or {}
     integration_links = [
         A(
             Span(item.name),
@@ -171,6 +177,25 @@ def sidebar(active: str = "/", company: dict | None = None, workspaces: list[dic
                 nav_link("Developers", "/developers", "integrations", active),
             ),
         ),
+        Div(
+            Div(
+                Strong(user.get("display_name") or "Signed in"),
+                Small(user.get("email", "")),
+                cls="sidebar-account-identity",
+            ),
+            Form(
+                Button(
+                    icon("logout"),
+                    Span("Log out"),
+                    type="submit",
+                    cls="sidebar-logout",
+                    aria_label="Log out of FastFunnel",
+                ),
+                method="post",
+                action="/auth/logout",
+            ),
+            cls="sidebar-account",
+        ),
         Script(
             NotStr(
                 """
@@ -234,7 +259,7 @@ def shell(title: str, *content, active: str = "/", rail=None):
     return (
         Title(f"{title} · FastFunnel"),
         Div(
-            sidebar(active, company, workspaces),
+            sidebar(active, company, workspaces, user),
             Main(
                 topbar(
                     title,
@@ -251,47 +276,124 @@ def shell(title: str, *content, active: str = "/", rail=None):
 
 
 def assistant_rail(company_name: str = "your workspace", *, enabled: bool = False):
+    suggestions = (
+        (
+            "Diagnose the funnel",
+            "Find the largest drop-off and suggest the next measurable test.",
+            "Where is our largest funnel drop-off, and what should we test next?",
+        ),
+        (
+            "Plan next week",
+            "Turn current campaign and KPI evidence into a focused content plan.",
+            "Build a one-week content plan from our current campaign and KPI evidence.",
+        ),
+        (
+            "Explain performance",
+            "Compare acquisition channels and clearly label any inference.",
+            "Which acquisition channels are underperforming, and what evidence supports that?",
+        ),
+    )
     return Aside(
         Div(
             Span("✦", cls="spark"),
-            Div(Strong("Agency copilot"), Small("xAI · LangChain")),
+            Div(
+                Strong("Agency copilot"),
+                Small("LangChain · workspace model"),
+            ),
             cls="rail-head",
         ),
         Div(
-            P(
-                "I can draft, review, distribute and measure—within "
-                f"{company_name}'s approval policy."
+            Div(
+                P(
+                    "Ask about content, acquisition, funnels or KPIs using "
+                    f"{company_name}'s live workspace evidence."
+                ),
+                Span(
+                    "Ready to answer" if enabled else "Model setup required",
+                    cls=f"status {'connected' if enabled else 'stub'}",
+                ),
+                cls="rail-intro",
             ),
-            Div(Strong("Current guardrail"), P("Publishing is bounded. Spend changes require admin approval."), cls="rail-card"),
+            Form(
+                Textarea(
+                    name="message",
+                    placeholder=(
+                        "Ask the agency to analyse, explain or plan…"
+                        if enabled
+                        else "Configure a model in Workspace settings"
+                    ),
+                    minlength="2",
+                    maxlength="4000",
+                    rows="3",
+                    required=True,
+                    disabled=not enabled,
+                    id="agency-copilot-input",
+                ),
+                Button(
+                    "Ask",
+                    type="submit",
+                    disabled=not enabled,
+                    cls="rail-ask",
+                ),
+                method="post",
+                action="/agency/chat",
+                cls="rail-compose",
+            ),
+            Div(
+                Small("TRY ASKING", cls="rail-label"),
+                *[
+                    Button(
+                        Strong(title),
+                        Small(detail),
+                        type="button",
+                        disabled=not enabled,
+                        data_prompt=prompt,
+                        onclick=(
+                            "agencyPrompt(this.dataset.prompt)"
+                            if enabled
+                            else None
+                        ),
+                        cls="rail-suggestion",
+                    )
+                    for title, detail, prompt in suggestions
+                ],
+                cls="rail-suggestions",
+            ),
+            (
+                A(
+                    "Configure the workspace model →",
+                    href="/settings",
+                    cls="rail-setup-link",
+                )
+                if not enabled
+                else ""
+            ),
+            Div(
+                Strong("Current guardrail"),
+                P(
+                    "Answers may advise and draft. Publishing and spend changes "
+                    "still require the governed approval workflow."
+                ),
+                cls="rail-card",
+            ),
             Div(
                 Strong("Grounded answers"),
-                P("Uses this workspace's content, campaigns and KPI facts."),
+                P("Uses tenant-scoped content, campaigns, funnels and KPI facts."),
                 cls="rail-card accent",
             ),
             cls="rail-body",
         ),
-        Form(
-            Input(
-                name="message",
-                placeholder=(
-                    "Ask the agency…"
-                    if enabled
-                    else "Configure xAI in Workspace settings"
-                ),
-                minlength="2",
-                maxlength="4000",
-                required=True,
-                disabled=not enabled,
-            ),
-            Button(
-                "↑",
-                type="submit",
-                aria_label="Send to agency",
-                disabled=not enabled,
-            ),
-            method="post",
-            action="/agency/chat",
-            cls="rail-input",
+        Script(
+            NotStr(
+                """
+                function agencyPrompt(prompt) {
+                  const input = document.getElementById('agency-copilot-input');
+                  if (!input || input.disabled) return;
+                  input.value = prompt;
+                  input.focus();
+                }
+                """
+            )
         ),
         cls="assistant-rail",
     )

@@ -14,7 +14,7 @@ honest (`connected`, `available`, or `Coming soon`).
 |---|---|---|
 | Dashboard | `/` | Workspace-scoped KPI evidence, active integrations, action queue, and recent activity. |
 | Plan | `/plan` | Live funnel evidence, measured KPIs, model readiness, saved operating plans, and governed plan generation when a model is configured. |
-| Agency | `/agency` | Tenant-scoped conversation and plan history. LangChain model execution is configuration-gated and never impersonates a connected model. |
+| Agency | `/agency` | Tenant-scoped conversation and plan history. The workspace Copilot has a multiline composer, explicit `Ask` action, evidence-led prompt suggestions below the composer, and configuration-gated LangChain execution. |
 | Ideas & Content | `/content` | Manual drafts and model-assisted drafts persist to the content workflow; revision generation is explicit. |
 | Review | `/review` | Exact content approval and payload-bound external action approval. The empty state leads back to content creation. |
 | Calendar | `/calendar` | Month navigation, channel/status filters, tenant-timezone display, direct approved scheduling, pipeline scheduling, rescheduling, reversible unscheduling, publication approval requests, and immutable published history. |
@@ -59,7 +59,8 @@ and deliberately show `Coming soon`.
 - Tenant identity is resolved before every authenticated route and all domain
   reads/writes carry the active company ID.
 - Sidebar sections independently expand and minimise, persist their state in
-  local storage, and offer global `<<` and `>>` controls.
+  local storage, and offer global `<<` and `>>` controls. The persistent account
+  block exposes a POST-only logout action that clears the complete session.
 - Calendar times are entered and displayed in the tenant timezone and persisted
   as timezone-aware UTC values.
 - Unscheduling is reversible: it moves an item back to `approved`; it does not

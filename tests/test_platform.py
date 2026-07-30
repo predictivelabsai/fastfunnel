@@ -619,7 +619,17 @@ def test_admin_can_create_and_reversibly_unschedule_calendar_content(
 def test_sidebar_sections_expand_and_collapse_with_catalog_link():
     from fastfunnel.web.ui import sidebar
 
-    html = str(sidebar("/", {"id": "co_predictivelabs"}, []))
+    html = str(
+        sidebar(
+            "/",
+            {"id": "co_predictivelabs"},
+            [],
+            {
+                "display_name": "Demo Admin",
+                "email": "admin@fastfunnel.app",
+            },
+        )
+    )
 
     assert html.count('class="nav-section"') == 6
     assert 'id="nav-collapse-all"' in html
@@ -628,6 +638,27 @@ def test_sidebar_sections_expand_and_collapse_with_catalog_link():
     assert 'data-section="create-ship"' in html
     assert 'href="/integrations"' in html
     assert "All integrations" in html
+    assert 'action="/auth/logout"' in html
+    assert 'method="post"' in html
+    assert "Log out" in html
+    assert "admin@fastfunnel.app" in html
+
+
+def test_agency_copilot_has_explicit_ask_and_suggestions_below_composer():
+    from fastfunnel.web.ui import assistant_rail
+
+    html = str(assistant_rail("Predictive Labs", enabled=True))
+
+    assert 'id="agency-copilot-input"' in html
+    assert ">Ask</button>" in html
+    assert 'action="/agency/chat"' in html
+    assert html.index('class="rail-compose"') < html.index(
+        'class="rail-suggestions"'
+    )
+    assert "Diagnose the funnel" in html
+    assert "Plan next week" in html
+    assert "Explain performance" in html
+    assert "agencyPrompt(this.dataset.prompt)" in html
 
 
 def test_api_reads_are_not_public():
