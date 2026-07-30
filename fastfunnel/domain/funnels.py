@@ -76,8 +76,11 @@ def sankey_spec(stages: list[FunnelStage]) -> dict:
             colors.extend(("rgba(234,88,12,0.24)", "rgba(234,88,12,0.12)"))
 
     node_x = stage_x + [drop_x[index] for index in connected_drops]
-    drop_y = [0.58, 0.68, 0.77, 0.85, 0.91]
-    node_y = [0.10] * stage_count + [drop_y[index] for index in connected_drops]
+    drop_y = [
+        0.56 + (0.36 * offset / max(1, len(connected_drops) - 1))
+        for offset in range(len(connected_drops))
+    ]
+    node_y = [0.10] * stage_count + drop_y
     node_colors = ["#2563eb"] * (stage_count - 1) + ["#059669"]
     node_colors += ["#ea580c"] * len(connected_drops)
     if sum(drops):

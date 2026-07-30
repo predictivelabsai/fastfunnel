@@ -74,6 +74,12 @@ uv run python -m compileall -q fastfunnel tests
 uv run pytest -q
 ```
 
+Validate real Composio and Arcade project keys with read-only API calls:
+
+```bash
+RUN_LIVE_INTEGRATION_TESTS=1 uv run pytest -q tests/test_live_integrations.py
+```
+
 Docker:
 
 ```bash

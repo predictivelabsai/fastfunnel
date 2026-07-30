@@ -5,6 +5,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import psycopg
 from fasthtml.common import *
 from starlette.responses import JSONResponse, RedirectResponse
 
@@ -15,6 +16,7 @@ from fastfunnel.domain.analytics import BASE_METRICS, AnalyticsService
 from fastfunnel.domain.content import ContentService
 from fastfunnel.domain.marketing import MarketingService
 from fastfunnel.domain.models import ModelGateway
+from fastfunnel.domain.semantic import SemanticModelService
 from fastfunnel.domain.store import store
 from fastfunnel.domain.workspace import (
     APITokenService,
@@ -28,6 +30,10 @@ from fastfunnel.integrations import (
     runtime_readiness,
 )
 from fastfunnel.integrations.execution import provider_for
+from fastfunnel.integrations.postgres import (
+    PostgresConnectionConfig,
+    PostgresConnectionService,
+)
 from fastfunnel.integrations.postmark import PostmarkInvitations
 from fastfunnel.skills import discover_skills, save_overlay, skill_for_company, upstream
 from fastfunnel.web import account_auth, google_auth
@@ -90,9 +96,15 @@ def establish_product_session(sess, account: dict) -> tuple[dict, dict]:
     company, user = store.ensure_user_workspace(
         account["email"], account.get("name") or account.get("display_name")
     )
+    if user["email"].lower() in settings.portfolio_admin_emails:
+        SemanticModelService(store).seed_business_organizations(user["email"])
     sess["user_email"] = user["email"]
     sess["company_id"] = company["id"]
-    set_shell_identity(company, user)
+    set_shell_identity(
+        company,
+        user,
+        workspaces=store.workspaces_for_user(user["email"]),
+    )
     return company, user
 
 
@@ -151,8 +163,26 @@ def tenant_context(sess) -> tuple[dict, dict]:
     sess["user_email"] = user["email"]
     sess["company_id"] = company["id"]
     model_status, _ = ModelGateway(store).readiness(company["id"])
-    set_shell_identity(company, user, model_ready=model_status == "connected")
+    set_shell_identity(
+        company,
+        user,
+        model_ready=model_status == "connected",
+        workspaces=store.workspaces_for_user(user["email"]),
+    )
     return company, user
+
+
+@rt("/workspace/switch", methods=["POST"])
+def switch_workspace(sess, company_id: str):
+    email = sess.get("user_email") or (
+        settings.admin_email if settings.dev_auth_bypass else ""
+    )
+    try:
+        company = store.company_for_user(email, company_id)
+    except LookupError:
+        return Response("Workspace membership required", status_code=403)
+    sess["company_id"] = company["id"]
+    return RedirectResponse("/", status_code=303)
 
 
 @rt("/", methods=["GET"])
@@ -1241,6 +1271,251 @@ def save_funnel_definition(
     )
 
 
+@rt("/analytics/growth", methods=["GET"])
+def growth_dashboard_view(sess, days: str = "30"):
+    company, _ = tenant_context(sess)
+    try:
+        selected_days = min(max(int(days), 7), 365)
+    except ValueError:
+        selected_days = 30
+    semantic = SemanticModelService(store)
+    data = semantic.overview(company_id=company["id"], days=selected_days)
+    try:
+        funnel = semantic.cohort_funnel(
+            company_id=company["id"],
+            days=selected_days,
+        )
+    except (LookupError, ValueError):
+        funnel = None
+
+    channels = sorted({row["channel"] for row in data["series"]})
+    session_traces = [
+        {
+            "type": "bar",
+            "name": channel,
+            "x": [
+                row["metric_date"]
+                for row in data["series"]
+                if row["channel"] == channel
+            ],
+            "y": [
+                row["value"]
+                for row in data["series"]
+                if row["channel"] == channel
+            ],
+        }
+        for channel in channels
+    ]
+    geography = data["geography"]
+    map_trace = {
+        "type": "scattergeo",
+        "mode": "markers",
+        "lat": [row["latitude"] for row in geography],
+        "lon": [row["longitude"] for row in geography],
+        "text": [
+            f"{row['city']}, {row['region']} · {row['people']:,} sign-ins"
+            for row in geography
+        ],
+        "marker": {
+            "size": [max(9, min(34, row["people"] / 2)) for row in geography],
+            "color": "#2563eb",
+            "opacity": 0.68,
+            "line": {"color": "white", "width": 1},
+        },
+        "hovertemplate": "%{text}<extra></extra>",
+    }
+    attribution = data["attribution"]
+    attribution_channels = [
+        row["channel"] for row in attribution["channels"]
+    ]
+    attribution_traces = [
+        {
+            "type": "bar",
+            "name": "First touch (default)",
+            "x": attribution_channels,
+            "y": [row["first_touch"] for row in attribution["channels"]],
+            "marker": {"color": "#16a34a"},
+        },
+        {
+            "type": "bar",
+            "name": "Last non-direct",
+            "x": attribution_channels,
+            "y": [
+                row["last_non_direct"] for row in attribution["channels"]
+            ],
+            "marker": {"color": "#2563eb"},
+        },
+    ]
+    chart_layout = {
+        "paper_bgcolor": "white",
+        "plot_bgcolor": "white",
+        "font": {"family": "Inter, ui-sans-serif, system-ui", "color": "#172033"},
+        "margin": {"l": 42, "r": 18, "t": 24, "b": 42},
+        "height": 340,
+    }
+    event_labels = {
+        "sign_in": "Sign-ins",
+        "journey_started": "Journey starts",
+        "package_viewed": "Package views",
+        "product_opened": "Product opens",
+        "tender_searched": "Tender searches",
+        "payment_succeeded": "Payments",
+    }
+    highlighted_events = [
+        (name, value)
+        for name, value in data["events"].items()
+        if name in event_labels
+    ][:4]
+    age = data["demographics"]["age_band"]
+    gender = data["demographics"]["gender"]
+    return shell(
+        "Growth dashboard",
+        Div(
+            Div(
+                H2(f"{company['name']} performance"),
+                P(
+                    "Cohort-safe activation, downstream events and privacy-thresholded "
+                    "geography."
+                ),
+            ),
+            Form(
+                Select(
+                    *[
+                        Option(
+                            f"Last {value} days",
+                            value=str(value),
+                            selected=value == selected_days,
+                        )
+                        for value in (7, 30, 90, 365)
+                    ],
+                    name="days",
+                    onchange="this.form.submit()",
+                ),
+                method="get",
+                action="/analytics/growth",
+            ),
+            cls="hero",
+        ),
+        Div(
+            metric(
+                "SESSIONS",
+                f"{data['metrics'].get('sessions', 0):,.0f}",
+                f"Last {selected_days} days",
+            ),
+            *[
+                metric(
+                    event_labels[name].upper(),
+                    f"{value:,}",
+                    "Distinct accounts",
+                )
+                for name, value in highlighted_events
+            ],
+            cls="grid metrics",
+        ),
+        Div(
+            Div(
+                Div(H2("Visits by channel"), Small("Daily sessions"), cls="section-head"),
+                Div(id="growth-channel-chart"),
+                Script(
+                    NotStr(
+                        "Plotly.newPlot('growth-channel-chart',"
+                        f"{json.dumps(session_traces)},"
+                        f"{json.dumps({**chart_layout, 'barmode': 'stack'})},"
+                        "{displayModeBar:false,responsive:true});"
+                    )
+                ),
+                cls="card",
+            ),
+            Div(
+                Div(
+                    H2("Activation geography"),
+                    Small("Minimum 10 accounts per area"),
+                    cls="section-head",
+                ),
+                Div(id="growth-geo-map"),
+                Script(
+                    NotStr(
+                        "Plotly.newPlot('growth-geo-map',"
+                        f"{json.dumps([map_trace])},"
+                        f"{json.dumps({**chart_layout, 'geo': {'scope': 'europe', 'fitbounds': 'locations', 'projection': {'type': 'mercator'}, 'showland': True, 'landcolor': '#eef2f7'}})},"
+                        "{displayModeBar:false,responsive:true});"
+                    )
+                ),
+                cls="card",
+            ),
+            cls="grid two",
+        ),
+        Div(
+            Div(
+                H2("Conversion attribution"),
+                Small(
+                    "First touch default · last non-direct comparison · "
+                    f"{attribution['conversion_event'].replace('_', ' ')}"
+                ),
+                cls="section-head",
+            ),
+            Div(id="growth-attribution-chart"),
+            Script(
+                NotStr(
+                    "Plotly.newPlot('growth-attribution-chart',"
+                    f"{json.dumps(attribution_traces)},"
+                    f"{json.dumps({**chart_layout, 'barmode': 'group'})},"
+                    "{displayModeBar:false,responsive:true});"
+                )
+            ),
+            cls="card",
+        ),
+        (
+            Div(
+                Div(
+                    H2("Lifecycle progression"),
+                    Small("Ordered distinct-account cohort"),
+                    cls="section-head",
+                ),
+                Div(id="growth-sankey"),
+                Script(
+                    NotStr(
+                        "Plotly.newPlot('growth-sankey',"
+                        f"{json.dumps([funnel['trace']])},"
+                        f"{json.dumps({**chart_layout, 'height': 430})},"
+                        "{displayModeBar:false,responsive:true});"
+                    )
+                ),
+                cls="card",
+            )
+            if funnel
+            else Div(
+                H2("Lifecycle model not configured"),
+                P("Choose one of the three seeded business organisations."),
+                cls="card empty",
+            )
+        ),
+        Div(
+            *[
+                Div(
+                    H2(title),
+                    Div(id=chart_id),
+                    Script(
+                        NotStr(
+                            f"Plotly.newPlot('{chart_id}',"
+                            f"{json.dumps([{'type': 'pie', 'hole': 0.55, 'labels': list(values), 'values': list(values.values())}])},"
+                            f"{json.dumps({**chart_layout, 'height': 300, 'showlegend': True})},"
+                            "{displayModeBar:false,responsive:true});"
+                        )
+                    ),
+                    cls="card",
+                )
+                for title, chart_id, values in (
+                    ("Age bands", "growth-age-chart", age),
+                    ("Gender", "growth-gender-chart", gender),
+                )
+            ],
+            cls="grid two",
+        ),
+        active="/analytics/growth",
+    )
+
+
 @rt("/analytics/explorer", methods=["GET"])
 def explorer_view(sess, metric_name: str = "clicks", dimension: str = "fact_date"):
     company, _ = tenant_context(sess)
@@ -1465,6 +1740,11 @@ def integration_detail_view(sess, integration_id: str, saved: str = ""):
         if integration_id in {"composio", "arcade"}
         else None
     )
+    postgres_connections = (
+        PostgresConnectionService(store).list(company["id"])
+        if integration_id == "postgres"
+        else []
+    )
     return shell(
         item.name,
         Div("Credential saved and verified.", cls="notice") if saved == "1" else "",
@@ -1482,6 +1762,114 @@ def integration_detail_view(sess, integration_id: str, saved: str = ""):
             Div(
                 H2("Setup"),
                 P(runtime_reason),
+                (
+                    Div(
+                        Form(
+                            Label(
+                                "Connection name",
+                                Input(
+                                    name="name",
+                                    placeholder="Tendly production",
+                                    required=True,
+                                ),
+                            ),
+                            Label(
+                                "Host",
+                                Input(
+                                    name="host",
+                                    placeholder="database.example.com",
+                                    required=True,
+                                ),
+                            ),
+                            Div(
+                                Label(
+                                    "Port",
+                                    Input(
+                                        type="number",
+                                        name="port",
+                                        value="5432",
+                                        min="1",
+                                        max="65535",
+                                        required=True,
+                                    ),
+                                ),
+                                Label(
+                                    "SSL mode",
+                                    Select(
+                                        Option("Require", value="require", selected=True),
+                                        Option("Verify CA", value="verify-ca"),
+                                        Option("Verify full", value="verify-full"),
+                                        Option("Disable (local proxy only)", value="disable"),
+                                        name="sslmode",
+                                    ),
+                                ),
+                                cls="grid two",
+                            ),
+                            Label(
+                                "Database",
+                                Input(name="database", required=True),
+                            ),
+                            Label(
+                                "Read-only username",
+                                Input(
+                                    name="username",
+                                    required=True,
+                                    autocomplete="username",
+                                ),
+                            ),
+                            Label(
+                                "Password",
+                                Input(
+                                    type="password",
+                                    name="password",
+                                    required=True,
+                                    autocomplete="new-password",
+                                ),
+                            ),
+                            Label(
+                                "Allowed schemas",
+                                Input(
+                                    name="schemas",
+                                    value="public",
+                                    placeholder="public,analytics",
+                                    required=True,
+                                ),
+                            ),
+                            P(
+                                "The connection is accepted only when PostgreSQL "
+                                "confirms a read-only session. Passwords are encrypted.",
+                                cls="muted",
+                            ),
+                            Button("Verify and save connection", type="submit"),
+                            method="post",
+                            action="/integrations/postgres/connections",
+                            cls="stack",
+                        ),
+                        (
+                            Table(
+                                Thead(Tr(Th("Connection"), Th("Host"), Th("Status"))),
+                                Tbody(
+                                    *[
+                                        Tr(
+                                            Td(connection["name"]),
+                                            Td(
+                                                f"{connection['config']['host']}:"
+                                                f"{connection['config']['port']}"
+                                            ),
+                                            Td(status_badge(connection["status"])),
+                                        )
+                                        for connection in postgres_connections
+                                    ]
+                                ),
+                                cls="table",
+                            )
+                            if postgres_connections
+                            else Div("No PostgreSQL sources configured.", cls="empty")
+                        ),
+                    )
+                    if integration_id == "postgres"
+                    else ""
+                ),
                 (
                     Form(
                         Input(
@@ -1582,6 +1970,51 @@ def integration_detail_view(sess, integration_id: str, saved: str = ""):
         ),
         active=f"/integrations/{integration_id}",
     )
+
+
+@rt("/integrations/postgres/connections", methods=["POST"])
+def save_postgres_connection(
+    sess,
+    name: str,
+    host: str,
+    port: str,
+    database: str,
+    username: str,
+    password: str,
+    schemas: str,
+    sslmode: str = "require",
+):
+    company, user = tenant_context(sess)
+    if not SecretVault(store).configured():
+        return Response("Encrypted credential storage is not configured", status_code=503)
+    schema_names = tuple(
+        value.strip() for value in schemas.split(",") if value.strip()
+    )
+    try:
+        PostgresConnectionService(store).save_and_verify(
+            company_id=company["id"],
+            actor_id=user["id"],
+            name=name,
+            config=PostgresConnectionConfig(
+                host=host.strip(),
+                port=int(port),
+                database=database.strip(),
+                username=username.strip(),
+                sslmode=sslmode,
+                schemas=schema_names,
+            ),
+            password=password,
+        )
+    except PermissionError as exc:
+        return Response(str(exc), status_code=403)
+    except (LookupError, TypeError, ValueError):
+        return Response("PostgreSQL connection details are invalid", status_code=422)
+    except (OSError, psycopg.Error):
+        return Response(
+            "PostgreSQL connection could not be verified as read-only",
+            status_code=422,
+        )
+    return RedirectResponse("/integrations/postgres?saved=1", status_code=303)
 
 
 @rt("/integrations/{integration_id}/api-key", methods=["POST"])

@@ -6,13 +6,18 @@ from fasthtml.common import *
 
 from fastfunnel.integrations import CATEGORIES, all_integrations
 
-_shell_identity: ContextVar[tuple[dict, dict, bool] | None] = ContextVar(
+_shell_identity: ContextVar[tuple[dict, dict, bool, list[dict]] | None] = ContextVar(
     "fastfunnel_shell_identity", default=None
 )
 
 
-def set_shell_identity(company: dict, user: dict, model_ready: bool = False) -> None:
-    _shell_identity.set((company, user, model_ready))
+def set_shell_identity(
+    company: dict,
+    user: dict,
+    model_ready: bool = False,
+    workspaces: list[dict] | None = None,
+) -> None:
+    _shell_identity.set((company, user, model_ready, workspaces or []))
 
 
 def icon(name: str) -> Span:
@@ -30,7 +35,9 @@ def nav_link(label: str, href: str, icon_name: str, active: str) -> A:
     return A(icon(icon_name), Span(label), href=href, cls=f"nav-link{selected}")
 
 
-def sidebar(active: str = "/") -> Aside:
+def sidebar(active: str = "/", company: dict | None = None, workspaces: list[dict] | None = None) -> Aside:
+    company = company or {}
+    workspaces = workspaces or []
     integration_links = [
         A(
             Span(item.name),
@@ -49,6 +56,28 @@ def sidebar(active: str = "/") -> Aside:
             Div(Strong("FastFunnel"), Small("Autonomous agency")),
             cls="brand",
         ),
+        (
+            Form(
+                Select(
+                    *[
+                        Option(
+                            f"{item['organization_name']} · {item['name']}",
+                            value=item["id"],
+                            selected=item["id"] == company.get("id"),
+                        )
+                        for item in workspaces
+                    ],
+                    name="company_id",
+                    onchange="this.form.submit()",
+                    aria_label="Active workspace",
+                ),
+                method="post",
+                action="/workspace/switch",
+                cls="workspace-switcher",
+            )
+            if len(workspaces) > 1
+            else ""
+        ),
         Nav(
             Small("OVERVIEW", cls="nav-label"),
             nav_link("Dashboard", "/", "dashboard", active),
@@ -62,6 +91,7 @@ def sidebar(active: str = "/") -> Aside:
             nav_link("Paid Campaigns", "/campaigns", "campaigns", active),
             Small("MEASURE", cls="nav-label"),
             nav_link("Analytics", "/analytics", "analytics", active),
+            nav_link("Growth dashboard", "/analytics/growth", "analytics", active),
             nav_link("KPI Explorer", "/analytics/explorer", "analytics", active),
             nav_link("Acquisition Funnel", "/analytics/funnel", "funnel", active),
             Small("LIBRARY", cls="nav-label"),
@@ -98,12 +128,14 @@ def topbar(
 
 def shell(title: str, *content, active: str = "/", rail=None):
     identity = _shell_identity.get()
-    company, user, model_ready = identity if identity else ({}, {}, False)
+    company, user, model_ready, workspaces = (
+        identity if identity else ({}, {}, False, [])
+    )
     company_name = company.get("name", "FastFunnel")
     return (
         Title(f"{title} · FastFunnel"),
         Div(
-            sidebar(active),
+            sidebar(active, company, workspaces),
             Main(
                 topbar(
                     title,

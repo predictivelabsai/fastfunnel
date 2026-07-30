@@ -14,6 +14,7 @@ dependencies = [
   "uvicorn>=0.34",
   "langchain-xai>=1.0",
   "cryptography>=45.0",
+  "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,9 @@ packages = ["fastfunnel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "live_integration: opt-in read-only calls to real provider APIs",
+]
 
 [tool.ruff]
 line-length = 100

@@ -1,4 +1,6 @@
 FROM python:3.13-slim
+COPY --from=gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.23.0 \
+    /cloud-sql-proxy /usr/local/bin/cloud-sql-proxy
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

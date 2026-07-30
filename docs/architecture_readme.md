@@ -4,11 +4,15 @@ This document is the engineering reference for FastFunnel's first functional
 vertical slice. It describes the target that the current implementation is
 moving toward, not a claim that every production capability is already live.
 
-The current slice deliberately uses SQLite and deterministic synthetic
-marketing data so the entire product works without provider credentials.
-HubSpot, Brevo, and GA4 implement live HTTP transports behind injectable
-contracts; Google Ads live transport remains pending. Funnels are data, not
-hard-coded pages: a workspace can create and edit ordered stage definitions.
+The current slice has a hybrid persistence profile. Production uses a dedicated
+PostgreSQL database whenever `FASTFUNNEL_DATABASE_URL` is set. SQLite remains
+the local/test fallback and source for a controlled one-time production import;
+the application does not dual-write or continuously replicate between them.
+Deterministic tenant packs keep the product useful without provider
+credentials. HubSpot, Brevo, and GA4 implement live HTTP transports behind
+injectable contracts; Google Ads live transport remains pending. Funnels are
+data, not hard-coded pages: a workspace can create and edit ordered stage
+definitions.
 
 ## Scope and decisions
 
@@ -16,12 +20,19 @@ The first slice provides:
 
 - a modular-monolith backend behind the existing FastHTML cockpit;
 - organization and workspace isolation on every business record and query;
-- versioned SQLite migrations and repeatable synthetic seed data;
+- a shared schema/repository contract over production PostgreSQL and local/test
+  SQLite, plus repeatable synthetic seed data;
 - normalized campaign, daily metric, journey-entity, and sync-run storage;
-- configurable cohort funnels with a six-stage digital-marketing default;
+- three isolated business packs with ordered event-cohort funnels, plus the
+  configurable six-stage generic digital-marketing template;
 - a conserved Sankey graph with conversion and drop-off values;
 - a database-backed job queue processed by a separate worker;
-- a connector boundary with synthetic, Google Ads, and GA4-ready adapters;
+- connector boundaries for synthetic/Google Ads reporting and replayable GA4
+  source ingestion,
+- semantic geography/address-area fields, with GA4 mapping documented as the
+  next live-normalizer extension;
+- a read-only PostgreSQL source connector with connection-scoped encrypted
+  credentials and schema discovery;
 - replayable HubSpot, Brevo, and GA4 ingestion with immutable raw extracts;
 - tenant-editable overlays over the immutable pinned Marketing Skills library;
 - tenant-scoped xAI model preferences behind a LangChain `ChatXAI` boundary;
@@ -37,11 +48,13 @@ The first slice provides:
 - a UI kept visually close to the existing cockpit while replacing static
   values with backend queries.
 
-The initial environment is intentionally local-first. SQLite is authoritative,
-synthetic mode is safe and useful, and no Google credential is required to
-exercise the product. External publication and paid-media writes remain behind
-the governed mutation boundary and must never be called directly by a route,
-prompt, or agent tool.
+Local development is intentionally SQLite-first and synthetic mode is safe and
+useful. Production is PostgreSQL-authoritative through
+`FASTFUNNEL_DATABASE_URL`; an existing SQLite dataset may be imported once
+during cutover, after which PostgreSQL is the sole production write target. No
+Google credential is required to exercise the local product. External
+publication and paid-media writes remain behind the governed mutation boundary
+and must never be called directly by a route, prompt, or agent tool.
 
 ## Modular-monolith architecture
 
@@ -71,11 +84,13 @@ flowchart TB
     subgraph Ports["Integration ports"]
         Synthetic["Synthetic connector"]
         GoogleAds["Google Ads connector"]
-        GA4["GA4-ready connector contract"]
+        GA4["GA4 source connector"]
         Publishers["Future publishing and paid-write adapters"]
     end
 
-    DB[("SQLite<br/>local authoritative store")]
+    DB[("Store abstraction")]
+    PG[("Dedicated PostgreSQL<br/>production authority")]
+    SQLite[("SQLite<br/>local and test fallback")]
 
     Browser --> Web
     Web --> App
@@ -103,6 +118,8 @@ flowchart TB
     Audit --> DB
     App --> Audit
     Worker --> Audit
+    DB -->|FASTFUNNEL_DATABASE_URL set| PG
+    DB -->|URL absent| SQLite
 ```
 
 The implemented first-slice package boundaries are:
@@ -113,13 +130,14 @@ fastfunnel/
 ├── config.py                 # environment-derived settings
 ├── web/                      # routes, components, view models, SSE
 ├── domain/
-│   ├── store.py              # SQLite connection, identity/content, audit
+│   ├── store.py              # PostgreSQL/SQLite store, identity/content, audit
 │   ├── schema.py             # versioned operational marketing schema
 │   ├── marketing.py          # ingestion, read models, seed, queue operations
 │   ├── ingestion.py          # raw extracts, cursors, replay, normalization
 │   ├── analytics.py          # KPI semantics, explorer, saved queries, exports
 │   ├── content.py            # skill-grounded draft creation
 │   ├── agency.py             # persisted tenant-grounded copilot and plans
+│   ├── semantic.py           # business packs, event cohorts, geo analytics
 │   ├── models.py             # LangChain/xAI model boundary
 │   ├── workspace.py          # model preferences and encrypted key vault
 │   ├── actions.py            # governed external action lifecycle
@@ -129,6 +147,7 @@ fastfunnel/
 │   ├── sources.py            # HubSpot, Brevo, and GA4 transports
 │   ├── destinations.py       # Google Sheets and FastSME exports
 │   ├── execution.py          # Composio and Arcade delegated execution
+│   ├── postgres.py           # encrypted read-only PostgreSQL source setup
 │   ├── registry.py           # honest integration capability registry
 │   └── postmark.py           # transactional email adapter
 ├── agents/                   # typed application tools only
@@ -141,6 +160,51 @@ is split further, web and agent code must continue to call tenant-aware domain
 services instead of provider writes. SQL stays behind `domain/store.py`,
 `domain/schema.py`, and the domain services that own the current persistence
 operations.
+
+## Persistence and PostgreSQL connection roles
+
+Two PostgreSQL uses must not be conflated:
+
+1. **FastFunnel platform database.** `domain/store.py` connects with psycopg to
+   the dedicated database in `FASTFUNNEL_DATABASE_URL`. This is authoritative
+   in production. If the variable is absent, the same repository surface uses
+   `FASTFUNNEL_DB_PATH` and SQLite for local development and tests.
+2. **Tenant data-source connections.** `integrations/postgres.py` lets a
+   workspace administrator register external PostgreSQL sources. It forces
+   `default_transaction_read_only=on`, applies a five-second statement timeout,
+   confirms the session is read-only, and discovers at most 500 objects only
+   in allow-listed schemas. Passwords are encrypted in `connection_secrets`;
+   list/view models expose configuration and a fingerprint, never plaintext.
+
+Production cutover from a populated SQLite environment is a one-time import,
+not a runtime synchronization topology. Setting
+`FASTFUNNEL_MIGRATE_SQLITE_ON_START=1` invokes the idempotent importer against
+`FASTFUNNEL_SQLITE_MIGRATION_PATH`; `FASTFUNNEL_SQLITE_IMPORT_ID` identifies
+the import in `legacy_imports` and prevents replay. Rows use conflict-safe
+inserts, workspace memberships are rebuilt, and serial sequences are advanced.
+After a verified cutover, the migration flag is removed and subsequent
+production reads and writes use `FASTFUNNEL_DATABASE_URL`.
+
+The production image pins Cloud SQL Auth Proxy `2.23.0`. The proxy is
+**Tendly-only**: `runtime.py` starts it on `127.0.0.1` only when
+`TENDLY_CLOUD_SQL_INSTANCE` is configured, using
+`TENDLY_GOOGLE_APPLICATION_CREDENTIALS_JSON` from the deployment environment
+and `TENDLY_CLOUD_SQL_PROXY_PORT` (default `5434`). Its temporary credential
+file is mode `0600` and removed at shutdown. MMG and FastOffice PostgreSQL
+sources use their configured direct TLS connections through
+`integrations/postgres.py`; they are not routed through the Tendly proxy.
+
+```mermaid
+flowchart LR
+    Store["FastFunnel Store"] -->|FASTFUNNEL_DATABASE_URL| PlatformPG[("Dedicated platform PostgreSQL")]
+    Store -->|URL absent| LocalSQLite[("Local/test SQLite")]
+    LocalSQLite -. controlled one-time import .-> PlatformPG
+
+    Tendly["Tendly source"] --> Proxy["Pinned Cloud SQL Auth Proxy<br/>127.0.0.1"]
+    Proxy --> TendlyPG[("Tendly Cloud SQL")]
+    MMG["MMG source"] -->|direct TLS, read-only| MMGPG[("MMG PostgreSQL")]
+    FastOffice["FastOffice source"] -->|direct TLS, read-only| FOPG[("FastOffice PostgreSQL")]
+```
 
 ## Tenant and request boundaries
 
@@ -163,6 +227,21 @@ flowchart LR
     Workspace --> AuditEvent
 ```
 
+`domain/semantic.py` defines three independently scoped organization/company
+packs. They are seeded only when the business-pack seed path is enabled and are
+granted to the configured portfolio administrator through normal memberships:
+
+| Organization / workspace | Ordered default event stages |
+| --- | --- |
+| My Medical Gateway / MMG Hospital Lead Generation | Signed in → Journey started → Package viewed → Quote requested → Deposit paid → Diagnostics approved → Balance paid → Treatment completed |
+| FastOffice / FastOffice Suite Growth | Signed in → Product opened → Artifact created → Checkout started → Subscription active → Payment succeeded → Subscription renewed |
+| Tendly / Tendly GTM | Signed in → Profile completed → Tender searched → Tender or alert saved → Checkout started → Subscription active → Payment succeeded → Subscription renewed |
+
+Each semantic funnel counts distinct, tenant-HMACed subjects reaching the
+configured events in order and within the observation window. The generic
+digital funnel remains available for workspaces that do not use a business
+pack.
+
 Every command and query receives an explicit request context:
 
 ```text
@@ -182,9 +261,10 @@ workspace:
 5. Unique/idempotency keys include the workspace boundary.
 6. Audit records preserve the actor and tenant context of the operation.
 
-SQLite cannot provide production row-level security, so the application and
-repository tests enforce these constraints now. A later Postgres
-implementation adds row-level policies as defense in depth.
+Application and repository tests enforce tenant scope on both storage profiles.
+The psycopg compatibility layer currently applies the same application-level
+isolation as SQLite; PostgreSQL row-level security remains production
+hardening, not an already-implemented control.
 
 Shared FastSME authentication proves account identity; it does not implicitly
 grant access to a FastFunnel tenant. The login callback therefore provisions or
@@ -240,7 +320,7 @@ flowchart LR
     ReadCursor --> Adapter{"Connector adapter"}
     Adapter -->|local default| Synthetic["Synthetic dataset"]
     Adapter -->|first live source| Ads["Google Ads API"]
-    Adapter -. future .-> Analytics["GA4 Data API"]
+    Adapter --> Analytics["GA4 Data API"]
     Synthetic --> Normalize["Validate and normalize batch"]
     Ads --> Normalize
     Analytics --> Normalize
@@ -275,11 +355,40 @@ only when the required environment credentials are present; its network
 transport must still remain disabled honestly until implemented. Before that
 the integration is `available`; an unimplemented adapter is `stub`.
 
-GA4 implements the same `MarketingReadConnector` lifecycle and normalized
-campaign/fact return shape. GA4-specific dimensions will map into the common
-fact and journey-entity model so adding keys later does not require changing
-the funnel engine or cockpit query contract. Until it is connected, seeded
-`journey_entities` supply the complete funnel cohort.
+The older GA4 `MarketingReadConnector` manifest remains a stub, while the
+newer replayable `GA4SourceConnector` implements the live Data API transport
+behind an injected HTTP client. It normalizes session metrics through
+`domain/ingestion.py`; seeded semantic events supply complete business-pack
+cohorts when no GA4 credential is connected.
+
+### Attribution, geography, and address dimensions
+
+The semantic event model in `domain/semantic.py` and `domain/schema.py` supports
+`country_code`, `region`, `city`, `postal_area`, latitude, and longitude on
+`event_facts`, with country/region/city dimensions on `metric_facts_v2`.
+Geography reads count distinct subjects, suppress cohorts smaller than ten,
+and return only aggregated locations. The three synthetic tenant packs populate
+these fields deterministically for the activation-geography dashboard.
+
+GA4 is the intended live source for geographic reporting. The connector
+contract covers country, region, city, and postal/address-area dimensions;
+street addresses and raw personally identifying address data are outside the
+analytics model. The currently committed GA4 `runReport` transport requests
+session source/medium and session metrics; expanding that request and its
+normalizer to the geographic dimensions is still pending and must remain
+labelled unavailable until it lands.
+
+The product attribution convention is **first touch by default**, with
+**last non-direct** as the comparison model.
+`SemanticModelService.attribution` implements both views over tenant-scoped,
+chronologically ordered `event_facts`. It selects the active funnel's final
+event as the conversion, groups touches by privacy-safe subject key, and
+returns channel-level conversion counts for both models. Direct traffic is
+excluded when a prior non-direct touch exists; otherwise it remains the
+fallback. The Growth dashboard renders these results side by side. GA4
+source/medium and campaign-level attribution granularity remains pending live
+credentials and normalization; the implemented result is channel-level and
+must not be presented as provider-reported attribution.
 
 ### Replayable sources and lifecycle data
 
@@ -305,6 +414,11 @@ flowchart LR
     Raw --> Replay["Replay"]
     Replay --> Normalize
 ```
+
+Stripe is explicitly different from HubSpot and Brevo: its registry state is
+`stub`, the UI renders it as **Coming soon**, and no Stripe API call is enabled.
+The declared customer, subscription, and payment capabilities are a future
+contract, not a connected revenue source.
 
 ## Skills, content, KPIs, and destinations
 
@@ -456,9 +570,10 @@ provider write client directly.
 
 ## Worker lifecycle
 
-The separate worker uses the same application composition root and database as
-the web process. SQLite queue claims use short transactions; provider network
-work occurs outside the claim transaction.
+The separate worker uses the same application composition root and selected
+database as the web process. `BEGIN IMMEDIATE` provides the SQLite claim lock
+and translates to a PostgreSQL advisory transaction lock; provider network work
+occurs outside the claim transaction.
 
 ```mermaid
 stateDiagram-v2
@@ -488,11 +603,12 @@ The worker lifecycle is:
 
 ## Key persistent records
 
-The following names match the current SQLite schema.
+The following names match the shared PostgreSQL/SQLite schema.
 
 | Record | Purpose and important constraints |
 | --- | --- |
 | `organizations` | Top-level tenant boundary. |
+| `legacy_imports` | One-time SQLite-to-PostgreSQL import identity, timestamp, source path, and row count. |
 | `companies` | Current workspace/client scope, timezone, currency, and profile. |
 | `users`, `memberships` | Actor identity and organization role. |
 | `integration_connections` | Provider, capability, honest state, account binding, secret reference; never raw credentials. |
@@ -500,6 +616,7 @@ The following names match the current SQLite schema.
 | `integration_secrets` | Fernet-encrypted Composio/Arcade project keys, validation state, and non-secret fingerprint. |
 | `api_tokens` | Hashed, expiring, revocable workspace API principals; raw tokens are shown once. |
 | `platform_accounts`, `data_sources` | Provider account hierarchy and tenant source configuration. |
+| `data_connections_v2`, `connection_secrets` | Verified read-only PostgreSQL source metadata and encrypted, connection-scoped passwords. |
 | `sync_cursors`, `raw_extracts` | Incremental watermarks and immutable replay input. |
 | `sync_runs` | Source, requested window, status, counts, freshness, cursor, and error. |
 | `crm_entities` | HubSpot/Brevo contacts, lifecycle stages, and revenue properties. |
@@ -508,6 +625,10 @@ The following names match the current SQLite schema.
 | `agency_messages` | Per-workspace, per-user copilot history; prompts contain summarized tenant facts, never credentials. |
 | `agency_runs` | Saved advisory operating plans with actor, goal, result, and status. |
 | `journey_entities` | Dated, campaign-attributed cohort entities with their highest reached stage. |
+| `semantic_models`, `source_mappings` | Versioned business-pack semantics and external-source mappings. |
+| `event_facts` | Ordered subject events with channel, campaign, session, value, and privacy-safe geographic fields. |
+| `metric_facts_v2` | Semantic daily metrics by channel, campaign, and geographic dimensions. |
+| `dashboard_definitions` | Tenant-pack dashboard composition and semantic-model binding. |
 | `funnel_definitions` | Workspace-owned funnel metadata and active version. |
 | `funnel_stages` | Ordered labels and JSON predicates belonging to a funnel definition. |
 | `job_queue` | Durable background work, idempotency key, attempts, timing, lock, and last error. |
@@ -525,11 +646,11 @@ accepted only after a read-only provider validation, encrypted using
 They execute only from the worker after membership, exact-payload approval,
 tenant identity, and prior-success checks pass.
 
-Foreign keys, WAL mode, and a busy timeout are enabled for every SQLite
-connection so the web and worker processes can share the durable store.
-Schema versions are recorded monotonically; an explicit migration runner
-remains a required hardening step before replacing the current idempotent DDL
-bootstrap.
+Foreign keys, WAL mode, and a busy timeout apply to SQLite fallback
+connections. Production connections use psycopg transactions against the
+dedicated `FASTFUNNEL_DATABASE_URL`. Schema versions are recorded in both
+profiles; an explicit migration runner remains required hardening beyond the
+current idempotent DDL bootstrap.
 
 ## System invariants
 
@@ -572,9 +693,11 @@ uv run python -m fastfunnel.app
 ```
 
 It listens on port `5005` by default. The SQLite location is controlled by
-`FASTFUNNEL_DB_PATH` and defaults to `data/fastfunnel.sqlite3`. Production
-additionally requires `FASTFUNNEL_SESSION_SECRET`; tenant Composio/Arcade
-credential storage requires `FASTFUNNEL_ENCRYPTION_KEY`.
+`FASTFUNNEL_DB_PATH` and defaults to `data/fastfunnel.sqlite3`.
+`FASTFUNNEL_DATABASE_URL` switches the platform store to dedicated PostgreSQL
+and is required in production. Production additionally requires
+`FASTFUNNEL_SESSION_SECRET`; all tenant credential vaults require
+`FASTFUNNEL_ENCRYPTION_KEY`.
 
 Run the worker in a separate terminal:
 
@@ -582,8 +705,10 @@ Run the worker in a separate terminal:
 uv run python -m fastfunnel.worker
 ```
 
-The default boot path migrates the database and loads deterministic synthetic
-marketing data. Re-running setup must be safe. Local UI verification uses
+The default boot path initializes the selected database and loads generic
+synthetic marketing data. `FASTFUNNEL_SEED_BUSINESSES=1` idempotently adds the
+MMG, FastOffice, and Tendly packs for the configured administrator and
+`FASTFUNNEL_PORTFOLIO_ADMIN_EMAILS`. Re-running setup must be safe. Local UI verification uses
 Playwright against `http://127.0.0.1:5005` and covers at least:
 
 - dashboard and funnel pages render without console errors;
@@ -598,19 +723,18 @@ artifacts are not committed.
 
 ## Production evolution
 
-The local architecture is designed to evolve without changing domain
-contracts:
+Production already uses the PostgreSQL path; remaining hardening should not
+change domain contracts:
 
-1. Replace SQLite repositories with Postgres implementations and add database
-   row-level security.
-2. Replace SQLite queue leasing with a production queue while retaining job
-   handler and idempotency contracts.
-3. Store encrypted OAuth refresh tokens in a secret manager; database records
+1. Add PostgreSQL row-level security and a fully versioned migration runner.
+2. Harden PostgreSQL queue claims and later replace the database queue only if
+   operational scale requires it, retaining handler and idempotency contracts.
+3. Move encrypted OAuth refresh tokens to a managed secret service; database records
    retain only references and connection metadata.
-4. Enable Google Ads live read sync after credential validation, then add GA4
-   using the existing `MarketingReadConnector` contract.
-5. Add immutable raw extracts/object storage for replay, backfill, and schema
-   drift analysis.
+4. Enable Google Ads live read sync after credential validation and extend the
+   existing GA4 transport/normalizer with its geographic dimensions.
+5. Move large immutable raw extracts to object storage for replay, backfill,
+   and schema-drift analysis.
 6. Add webhook signature verification, replay protection, reconciliation, and
    provider-specific rate limiting.
 7. Add structured logs, metrics, job-lag alerts, connector freshness alerts,
@@ -618,20 +742,26 @@ contracts:
 8. Introduce live provider mutations one action class at a time, with adapter
    contract tests and default dry-run or paused behavior.
 
-The production image supervises the web and worker as separate OS processes in
-one container so both share the same mounted SQLite volume. Docker Compose may
-run the same entry points as two services using its shared named volume. A
-release is healthy only when initialization has completed, the web health
-check passes, the worker is polling, queue lag is bounded, and the synthetic
-smoke funnel produces a conserved graph.
+The production image supervises web and worker as separate OS processes in one
+container, both using the same dedicated PostgreSQL URL. It additionally
+supervises the pinned Cloud SQL proxy only for Tendly deployments configured
+with `TENDLY_CLOUD_SQL_INSTANCE`; MMG and FastOffice retain direct connections.
+Docker Compose remains a local SQLite profile with separate web/worker services
+and a shared named volume. A release is healthy only when initialization has
+completed, PostgreSQL is reachable, the web health check passes, the worker is
+polling, queue lag is bounded, and each enabled tenant pack produces a
+conserved graph.
 
 ## Definition of done for the first slice
 
-The vertical slice is complete when a clean checkout can initialize SQLite,
-load synthetic data, start web and worker processes, execute an idempotent sync,
-and display the configurable default funnel through the existing cockpit UI.
+The vertical slice is complete when a clean checkout can initialize SQLite
+locally or dedicated PostgreSQL in production, load the three isolated
+synthetic tenant packs, start web and worker processes, execute an idempotent
+sync, and display each configurable business funnel through the existing
+cockpit UI.
 Tests must prove tenant isolation, ingestion repeatability, funnel conservation,
 worker recovery, exact-payload approval, and duplicate mutation protection.
 Google Ads must have an executable read adapter or accurately report its
-unconnected/available state; GA4 must be addable through the documented
-connector contract without changing the funnel engine.
+unconnected/available state. GA4 must accurately distinguish its implemented
+source transport from pending geographic normalization and must not require
+changes to the funnel engine.

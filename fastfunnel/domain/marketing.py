@@ -415,10 +415,20 @@ class MarketingService:
                 "SELECT * FROM funnel_stages WHERE funnel_id=? ORDER BY position",
                 (funnel_id,),
             ).fetchall()
+            predicates = [
+                json.loads(row["predicate_json"]) for row in stage_rows
+            ]
+            if predicates and all("event_name" in item for item in predicates):
+                from fastfunnel.domain.semantic import SemanticModelService
+
+                return SemanticModelService(self.store).cohort_funnel(
+                    company_id=company_id,
+                    funnel_id=funnel_id,
+                    days=days,
+                )
             since = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
             stages = []
-            for row in stage_rows:
-                predicate = json.loads(row["predicate_json"])
+            for row, predicate in zip(stage_rows, predicates, strict=True):
                 count = conn.execute(
                     """SELECT COUNT(*) FROM journey_entities
                        WHERE company_id=? AND occurred_on>=? AND reached_stage>=?""",

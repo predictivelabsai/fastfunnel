@@ -72,14 +72,20 @@ class SQLiteBackend:
         path: str | Path,
         resources: tuple[Resource, ...],
         initialize: Callable[[], None] | None = None,
+        store=None,
     ) -> None:
         self.path = str(path)
+        self.store = store
         self.resources = {resource.slug: resource for resource in resources}
         if initialize:
             initialize()
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
+        if self.store is not None:
+            with self.store.connect() as connection:
+                yield connection
+            return
         connection = sqlite3.connect(self.path, timeout=15)
         connection.row_factory = sqlite3.Row
         try:
@@ -89,9 +95,30 @@ class SQLiteBackend:
 
     def columns(self, resource: Resource) -> list[dict[str, Any]]:
         with self.connection() as connection:
-            rows = connection.execute(
-                f'PRAGMA table_info("{resource.table}")'
-            ).fetchall()
+            if self.store is not None and self.store.database_url:
+                rows = connection.execute(
+                    """SELECT column_name name, data_type type,
+                              CASE WHEN is_nullable='NO' THEN 1 ELSE 0 END notnull,
+                              column_default dflt_value,
+                              CASE WHEN column_name IN (
+                                SELECT kcu.column_name
+                                FROM information_schema.table_constraints tc
+                                JOIN information_schema.key_column_usage kcu
+                                  ON kcu.constraint_name=tc.constraint_name
+                                 AND kcu.table_schema=tc.table_schema
+                                WHERE tc.constraint_type='PRIMARY KEY'
+                                  AND tc.table_schema='public'
+                                  AND tc.table_name=?
+                              ) THEN 1 ELSE 0 END pk
+                       FROM information_schema.columns
+                       WHERE table_schema='public' AND table_name=?
+                       ORDER BY ordinal_position""",
+                    (resource.table, resource.table),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    f'PRAGMA table_info("{resource.table}")'
+                ).fetchall()
         if not rows:
             raise RuntimeError(
                 f"API resource {resource.slug!r} references missing table "

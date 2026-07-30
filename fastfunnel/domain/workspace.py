@@ -279,6 +279,91 @@ class SecretVault:
             raise RuntimeError(f"{self.key_env} is invalid") from exc
 
 
+class ConnectionSecretVault(SecretVault):
+    """Connection-scoped write-only secrets for database and source adapters."""
+
+    def save(
+        self,
+        *,
+        company_id: str,
+        connection_id: str,
+        actor_id: str,
+        secret_name: str,
+        value: str,
+    ) -> str:
+        value = value.strip()
+        if not value or len(value) > 16384:
+            raise ValueError("Credential value is invalid")
+        timestamp = now_iso()
+        fingerprint = hashlib.sha256(value.encode()).hexdigest()[:12]
+        ciphertext = self._fernet().encrypt(value.encode())
+        with self.store.connect() as conn:
+            connection = conn.execute(
+                """SELECT data_connections_v2.*, companies.organization_id
+                   FROM data_connections_v2
+                   JOIN companies ON companies.id=data_connections_v2.company_id
+                   WHERE data_connections_v2.id=? AND data_connections_v2.company_id=?""",
+                (connection_id, company_id),
+            ).fetchone()
+            if not connection:
+                raise LookupError("Unknown data connection")
+            WorkspaceConfiguration._require_admin(
+                conn, connection["organization_id"], actor_id
+            )
+            conn.execute(
+                """INSERT INTO connection_secrets
+                   (id, connection_id, secret_name, ciphertext, fingerprint,
+                    created_by, updated_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(connection_id, secret_name) DO UPDATE SET
+                     ciphertext=excluded.ciphertext,
+                     fingerprint=excluded.fingerprint,
+                     updated_by=excluded.updated_by,
+                     updated_at=excluded.updated_at""",
+                (
+                    new_id("csec"),
+                    connection_id,
+                    secret_name,
+                    ciphertext,
+                    fingerprint,
+                    actor_id,
+                    actor_id,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            Store._audit(
+                conn,
+                connection["organization_id"],
+                company_id,
+                actor_id,
+                "data_connection.credential.updated",
+                "data_connection",
+                connection_id,
+                {"secret_name": secret_name, "fingerprint": fingerprint},
+            )
+        return fingerprint
+
+    def get(self, *, company_id: str, connection_id: str, secret_name: str) -> str:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT connection_secrets.ciphertext
+                   FROM connection_secrets
+                   JOIN data_connections_v2
+                     ON data_connections_v2.id=connection_secrets.connection_id
+                   WHERE connection_secrets.connection_id=?
+                     AND connection_secrets.secret_name=?
+                     AND data_connections_v2.company_id=?""",
+                (connection_id, secret_name, company_id),
+            ).fetchone()
+        if not row:
+            raise LookupError("Connection credential is not configured")
+        try:
+            return self._fernet().decrypt(row["ciphertext"]).decode()
+        except InvalidToken as exc:
+            raise RuntimeError("Stored connection credential cannot be decrypted") from exc
+
+
 class APITokenService:
     """Issue revocable, tenant-bound API bearer tokens stored only as hashes."""
 

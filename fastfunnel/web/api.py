@@ -37,7 +37,12 @@ RESOURCES = (
     Resource("exports", "export_runs", "Export runs", "Destination export delivery status and receipts.", search_fields=("status",)),
 )
 
-backend = SQLiteBackend(settings.database_path, RESOURCES, initialize=store.initialize)
+backend = SQLiteBackend(
+    settings.database_path,
+    RESOURCES,
+    initialize=store.initialize,
+    store=store,
+)
 
 
 def tenant_principal(

@@ -23,6 +23,15 @@ class Settings:
         os.getenv("POSTMARK_API_TOKEN", ""),
     )
     base_url: str = os.getenv("FASTFUNNEL_BASE_URL", "http://127.0.0.1:5005")
+    seed_businesses: bool = os.getenv("FASTFUNNEL_SEED_BUSINESSES", "0") == "1"
+    platform_database_url: str = os.getenv("FASTFUNNEL_DATABASE_URL", "").strip()
+    cloud_sql_instance: str = os.getenv("TENDLY_CLOUD_SQL_INSTANCE", "").strip()
+    cloud_sql_port: int = int(os.getenv("TENDLY_CLOUD_SQL_PROXY_PORT", "5434"))
+    portfolio_admin_emails: tuple[str, ...] = tuple(
+        value.strip().lower()
+        for value in os.getenv("FASTFUNNEL_PORTFOLIO_ADMIN_EMAILS", "").split(",")
+        if value.strip()
+    )
 
 
 settings = Settings()

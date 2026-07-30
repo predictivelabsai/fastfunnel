@@ -1,6 +1,6 @@
 """Versioned SQLite schema for the operational marketing backend."""
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 DDL = """
 PRAGMA foreign_keys = ON;
@@ -8,6 +8,13 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS legacy_imports (
+    import_id TEXT PRIMARY KEY,
+    source_path TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    rows_written INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS integration_connections (
@@ -415,4 +422,142 @@ CREATE TABLE IF NOT EXISTS agency_runs (
 );
 CREATE INDEX IF NOT EXISTS ix_agency_runs_company
     ON agency_runs(company_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS workspace_memberships (
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(company_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS data_connections_v2 (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    last_checked_at TEXT,
+    last_error TEXT,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, name)
+);
+CREATE INDEX IF NOT EXISTS ix_data_connections_v2_company_provider
+    ON data_connections_v2(company_id, provider);
+
+CREATE TABLE IF NOT EXISTS connection_secrets (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES data_connections_v2(id) ON DELETE CASCADE,
+    secret_name TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    fingerprint TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    updated_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(connection_id, secret_name)
+);
+
+CREATE TABLE IF NOT EXISTS semantic_models (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    model_key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'active',
+    definition_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, model_key, version)
+);
+
+CREATE TABLE IF NOT EXISTS source_mappings (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    connection_id TEXT NOT NULL REFERENCES data_connections_v2(id) ON DELETE CASCADE,
+    semantic_model_id TEXT NOT NULL REFERENCES semantic_models(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'draft',
+    definition_json TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(connection_id, name, version)
+);
+
+CREATE TABLE IF NOT EXISTS event_facts (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    semantic_model_id TEXT REFERENCES semantic_models(id),
+    connection_id TEXT REFERENCES data_connections_v2(id),
+    source TEXT NOT NULL,
+    external_event_id TEXT NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    event_name TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    session_key TEXT,
+    campaign_external_id TEXT,
+    channel TEXT NOT NULL DEFAULT '',
+    value REAL,
+    currency TEXT NOT NULL DEFAULT '',
+    country_code TEXT NOT NULL DEFAULT '',
+    region TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    postal_area TEXT NOT NULL DEFAULT '',
+    latitude REAL,
+    longitude REAL,
+    properties_json TEXT NOT NULL DEFAULT '{}',
+    ingested_at TEXT NOT NULL,
+    UNIQUE(company_id, source, external_event_id)
+);
+CREATE INDEX IF NOT EXISTS ix_event_facts_funnel
+    ON event_facts(company_id, event_name, occurred_at, subject_key);
+CREATE INDEX IF NOT EXISTS ix_event_facts_geo
+    ON event_facts(company_id, country_code, region, city, occurred_at);
+
+CREATE TABLE IF NOT EXISTS metric_facts_v2 (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    semantic_model_id TEXT REFERENCES semantic_models(id),
+    connection_id TEXT REFERENCES data_connections_v2(id),
+    source TEXT NOT NULL,
+    metric_date TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    value REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT '',
+    campaign_external_id TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    country_code TEXT NOT NULL DEFAULT '',
+    region TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    dimensions_json TEXT NOT NULL DEFAULT '{}',
+    ingested_at TEXT NOT NULL,
+    UNIQUE(
+        company_id, source, metric_date, metric_name,
+        campaign_external_id, channel, country_code, region, city, dimensions_json
+    )
+);
+CREATE INDEX IF NOT EXISTS ix_metric_facts_v2_query
+    ON metric_facts_v2(company_id, metric_name, metric_date);
+
+CREATE TABLE IF NOT EXISTS dashboard_definitions (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    semantic_model_id TEXT NOT NULL REFERENCES semantic_models(id) ON DELETE CASCADE,
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(company_id, slug)
+);
 """

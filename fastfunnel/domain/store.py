@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -9,6 +10,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
 
 from fastfunnel.config import settings
 from fastfunnel.domain.schema import DDL, SCHEMA_VERSION
@@ -71,12 +75,104 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(8)}"
 
 
+class CompatRow(dict):
+    """Mapping row that also preserves sqlite3.Row positional access."""
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return tuple(self.values())[key]
+        return super().__getitem__(key)
+
+
+class PostgresCompatCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        return CompatRow(row) if row is not None else None
+
+    def fetchall(self):
+        return [CompatRow(row) for row in self.cursor.fetchall()]
+
+    def __iter__(self):
+        for row in self.cursor:
+            yield CompatRow(row)
+
+
+class PostgresCompatConnection:
+    """Translate the repository's constrained SQLite SQL subset to psycopg."""
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    @staticmethod
+    def _sql(statement: str) -> str:
+        sql = statement.strip()
+        if sql.upper() == "BEGIN IMMEDIATE":
+            return "SELECT pg_advisory_xact_lock(78462195)"
+        sql = sql.replace("datetime('now')", "CURRENT_TIMESTAMP")
+        ignored = bool(re.match(r"(?is)^INSERT\s+OR\s+IGNORE\s+INTO\b", sql))
+        if ignored:
+            sql = re.sub(
+                r"(?is)^INSERT\s+OR\s+IGNORE\s+INTO\b",
+                "INSERT INTO",
+                sql,
+                count=1,
+            )
+            sql = f"{sql} ON CONFLICT DO NOTHING"
+        return sql.replace("?", "%s")
+
+    def execute(self, statement: str, params=()):
+        return PostgresCompatCursor(
+            self.connection.execute(self._sql(statement), params or ())
+        )
+
+    def executemany(self, statement: str, params):
+        cursor = self.connection.cursor()
+        cursor.executemany(self._sql(statement), params)
+        return PostgresCompatCursor(cursor)
+
+    def executescript(self, script: str) -> None:
+        for raw_statement in script.split(";"):
+            statement = raw_statement.strip()
+            if not statement or statement.upper().startswith("PRAGMA "):
+                continue
+            statement = re.sub(
+                r"(?i)INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT",
+                "BIGSERIAL PRIMARY KEY",
+                statement,
+            )
+            statement = re.sub(r"(?i)\bBLOB\b", "BYTEA", statement)
+            self.connection.execute(statement)
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+
 class Store:
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, database_url: str | None = None):
         self.path = path or settings.database_path
+        self.database_url = (
+            database_url
+            if database_url is not None
+            else "" if path is not None else settings.platform_database_url
+        )
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self) -> Iterator[sqlite3.Connection | PostgresCompatConnection]:
+        if self.database_url:
+            raw = psycopg.connect(self.database_url, row_factory=dict_row)
+            connection = PostgresCompatConnection(raw)
+            try:
+                yield connection
+                raw.commit()
+            except Exception:
+                raw.rollback()
+                raise
+            finally:
+                raw.close()
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
@@ -147,9 +243,118 @@ class Store:
                     company_id,
                     profile,
                 )
+            conn.execute(
+                """INSERT OR IGNORE INTO workspace_memberships
+                   (company_id, user_id, role, created_at)
+                   SELECT companies.id, memberships.user_id, memberships.role, ?
+                   FROM companies
+                   JOIN memberships
+                     ON memberships.organization_id=companies.organization_id""",
+                (now_iso(),),
+            )
         from fastfunnel.domain.marketing import MarketingService
 
+        if self.database_url and os.getenv("FASTFUNNEL_MIGRATE_SQLITE_ON_START") == "1":
+            self.migrate_from_sqlite(
+                Path(
+                    os.getenv(
+                        "FASTFUNNEL_SQLITE_MIGRATION_PATH",
+                        str(settings.database_path),
+                    )
+                ),
+                os.getenv("FASTFUNNEL_SQLITE_IMPORT_ID", "production-v1"),
+            )
         MarketingService(self).seed()
+        if settings.seed_businesses:
+            from fastfunnel.domain.semantic import SemanticModelService
+
+            semantic = SemanticModelService(self)
+            for email in dict.fromkeys(
+                (settings.admin_email, *settings.portfolio_admin_emails)
+            ):
+                try:
+                    semantic.seed_business_organizations(email)
+                except LookupError:
+                    continue
+
+    def migrate_from_sqlite(self, source_path: Path, import_id: str) -> int:
+        """Idempotently import the existing durable SQLite store into PostgreSQL."""
+        if not self.database_url or not source_path.is_file():
+            return 0
+        with self.connect() as destination:
+            if destination.execute(
+                "SELECT 1 FROM legacy_imports WHERE import_id=?", (import_id,)
+            ).fetchone():
+                return 0
+        source = sqlite3.connect(source_path)
+        source.row_factory = sqlite3.Row
+        total = 0
+        try:
+            tables = source.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                   ORDER BY rowid"""
+            ).fetchall()
+            with self.connect() as destination:
+                for table_row in tables:
+                    table = table_row["name"]
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+                        continue
+                    exists = destination.execute(
+                        """SELECT 1 FROM information_schema.tables
+                           WHERE table_schema='public' AND table_name=?""",
+                        (table,),
+                    ).fetchone()
+                    if not exists or table == "legacy_imports":
+                        continue
+                    columns = [
+                        row["name"]
+                        for row in source.execute(f'PRAGMA table_info("{table}")')
+                    ]
+                    if not columns:
+                        continue
+                    quoted = ",".join(f'"{column}"' for column in columns)
+                    placeholders = ",".join("?" for _ in columns)
+                    sql = (
+                        f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders}) '
+                        "ON CONFLICT DO NOTHING"
+                    )
+                    rows = source.execute(f'SELECT {quoted} FROM "{table}"').fetchall()
+                    destination.executemany(
+                        sql,
+                        [tuple(row[column] for column in columns) for row in rows],
+                    )
+                    total += len(rows)
+                destination.execute(
+                    """INSERT INTO workspace_memberships
+                       (company_id, user_id, role, created_at)
+                       SELECT companies.id, memberships.user_id,
+                              memberships.role, ?
+                       FROM companies
+                       JOIN memberships
+                         ON memberships.organization_id=companies.organization_id
+                       ON CONFLICT (company_id, user_id) DO NOTHING""",
+                    (now_iso(),),
+                )
+                for sequenced_table in ("audit_events", "marketing_facts"):
+                    destination.execute(
+                        f"""SELECT setval(
+                               pg_get_serial_sequence(?, 'id'),
+                               COALESCE(MAX(id), 1),
+                               MAX(id) IS NOT NULL
+                            )
+                            FROM "{sequenced_table}" """,
+                        (sequenced_table,),
+                    )
+                destination.execute(
+                    """INSERT INTO legacy_imports
+                       (import_id, source_path, imported_at, rows_written)
+                       VALUES (?, ?, ?, ?)""",
+                    (import_id, str(source_path), now_iso(), total),
+                )
+        finally:
+            source.close()
+        return total
 
     def default_company_id(self) -> str:
         with self.connect() as conn:
@@ -165,9 +370,9 @@ class Store:
                 if email:
                     row = conn.execute(
                         """SELECT companies.* FROM companies
-                           JOIN memberships
-                             ON memberships.organization_id=companies.organization_id
-                           JOIN users ON users.id=memberships.user_id
+                           JOIN workspace_memberships
+                             ON workspace_memberships.company_id=companies.id
+                           JOIN users ON users.id=workspace_memberships.user_id
                            WHERE companies.id=? AND lower(users.email)=lower(?)""",
                         (company_id, email),
                     ).fetchone()
@@ -178,8 +383,9 @@ class Store:
             elif email:
                 row = conn.execute(
                     """SELECT companies.* FROM companies
-                       JOIN memberships ON memberships.organization_id=companies.organization_id
-                       JOIN users ON users.id=memberships.user_id
+                       JOIN workspace_memberships
+                         ON workspace_memberships.company_id=companies.id
+                       JOIN users ON users.id=workspace_memberships.user_id
                        WHERE lower(users.email)=lower(?)
                        ORDER BY companies.created_at LIMIT 1""",
                     (email,),
@@ -191,6 +397,24 @@ class Store:
         if not row:
             raise LookupError("No authorized company workspace")
         return dict(row)
+
+    def workspaces_for_user(self, email: str) -> list[dict]:
+        """Return only workspaces explicitly granted to the authenticated user."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT companies.*, organizations.name organization_name,
+                          workspace_memberships.role workspace_role
+                   FROM companies
+                   JOIN organizations
+                     ON organizations.id=companies.organization_id
+                   JOIN workspace_memberships
+                     ON workspace_memberships.company_id=companies.id
+                   JOIN users ON users.id=workspace_memberships.user_id
+                   WHERE lower(users.email)=lower(?)
+                   ORDER BY organizations.name, companies.name""",
+                (email,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def ensure_user_workspace(
         self,
@@ -263,6 +487,12 @@ class Store:
             conn.execute(
                 "INSERT OR IGNORE INTO memberships VALUES (?, ?, 'admin')",
                 (organization_id, user_id),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO workspace_memberships
+                   (company_id, user_id, role, created_at)
+                   VALUES (?, ?, 'admin', ?)""",
+                (company_id, user_id, created),
             )
             self._audit(
                 conn,
