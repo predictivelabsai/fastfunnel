@@ -3,6 +3,7 @@ from fasthtml.common import *
 
 from .api import RESOURCES
 from .landing import FAVICON
+from .seo import seo_meta
 
 ACCENT = "#f97316"
 TINT = "#fff7ed"
@@ -51,7 +52,7 @@ def developer_content():
             ),
             Div(
                 Strong("Public preview access. "),
-                "Tenant data reads and writes return 503 until FASTSME_API_TOKEN is configured; enabled clients send Authorization: Bearer <token>.",
+                "GET endpoints require no authentication. Writes return 503 until FASTSME_API_TOKEN is configured; enabled clients send Authorization: Bearer <token>.",
                 cls="dev-note",
             ),
             H3("Resources"),
@@ -78,6 +79,11 @@ def developer_page():
             Meta(charset="utf-8"),
             Meta(name="viewport", content="width=device-width, initial-scale=1"),
             Meta(name="description", content="Developer API documentation for FastFunnel."),
+            *seo_meta(
+                path="/developers",
+                title="FastFunnel Developer API · FastSME",
+                description="Build integrations with the public FastFunnel API, OpenAPI schemas, examples, and token-gated writes.",
+            ),
             Link(rel="icon", type="image/svg+xml", href=FAVICON),
             Link(rel="preconnect", href="https://fonts.googleapis.com"),
             Link(rel="stylesheet", href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;750&display=swap"),

@@ -4,6 +4,7 @@ from urllib.parse import quote
 from fasthtml.common import *
 
 from .account_auth import AUTH_CSS, AUTH_JS, auth_modal
+from .seo import seo_meta
 
 ACCENT = "#f97316"
 TINT = "#fff7ed"
@@ -37,6 +38,7 @@ def landing_page():
         Head(Title("FastFunnel · FastSME"), Meta(charset="utf-8"),
              Meta(name="viewport", content="width=device-width, initial-scale=1"),
              Meta(name="description", content="Plan, create, review, schedule, distribute, and measure marketing work through a bounded autonomous agency."),
+             *seo_meta(),
              Link(rel="icon", type="image/svg+xml", href=FAVICON),
              Link(rel="preconnect", href="https://fonts.googleapis.com"),
              Link(rel="stylesheet", href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;750&display=swap"),
@@ -62,7 +64,7 @@ def landing_page():
                             cls="lp-grid"), cls="lp-band"),
                 Section(Div(Span("Developers", cls="lp-kicker"),
                             H2("Build on FastFunnel."),
-                            P("Explore the tenant-protected API, typed schemas, examples, and governed integration writes.")),
+                            P("Explore the public read API, typed schemas, examples, and token-gated integration writes.")),
                         A("Read the API documentation →", href="/developers", cls="lp-primary"),
                         cls="lp-developers"),
             ),

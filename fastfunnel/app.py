@@ -26,6 +26,7 @@ from fastfunnel.web import account_auth, google_auth
 from fastfunnel.web.api import api
 from fastfunnel.web.developer import developer_page
 from fastfunnel.web.landing import landing_page
+from fastfunnel.web.seo import register_seo_routes
 from fastfunnel.web.ui import (
     integration_group_counts,
     set_shell_identity,
@@ -1171,6 +1172,9 @@ def invite_team_member(sess, email: str, role: str):
     )
     return RedirectResponse("/team", status_code=303)
 
+
+
+register_seo_routes(app)
 
 def main():
     import uvicorn
