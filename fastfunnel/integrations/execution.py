@@ -85,27 +85,30 @@ class ComposioProvider(ExecutionProvider):
         if not key:
             raise RuntimeError("Composio API key is not configured")
         base = os.getenv("COMPOSIO_API_BASE", "https://backend.composio.dev/api/v3")
+        toolkit = tool.split("_", 1)[0].lower()
+        session_body: dict[str, Any] = {
+            "user_id": external_user_id,
+            "toolkits": {"enabled": [toolkit]},
+            "manage_connections": {"enable": True},
+        }
+        if connected_account_id:
+            session_body["connected_accounts"] = {
+                toolkit: connected_account_id,
+            }
         session = self.transport.request(
             "POST",
-            f"{base.rstrip('/')}/sessions",
+            f"{base.rstrip('/')}/tool_router/session",
             headers={"x-api-key": key},
-            body={
-                "user_id": external_user_id,
-                "toolkits": [tool.split("_", 1)[0].lower()],
-                "manage_connections": True,
-            },
+            body=session_body,
         )
-        session_id = session.get("id") or session.get("session_id")
+        session_id = session.get("session_id")
         if not session_id:
             raise RuntimeError("Composio did not return a session id")
-        payload: dict[str, Any] = {"tool": tool, "arguments": arguments}
-        if connected_account_id:
-            payload["connected_account_id"] = connected_account_id
         receipt = self.transport.request(
             "POST",
-            f"{base.rstrip('/')}/sessions/{session_id}/execute",
+            f"{base.rstrip('/')}/tool_router/session/{session_id}/execute",
             headers={"x-api-key": key},
-            body=payload,
+            body={"tool_slug": tool, "arguments": arguments},
         )
         return ToolResult(self.provider, tool, "succeeded", receipt)
 
@@ -140,15 +143,11 @@ class ArcadeProvider(ExecutionProvider):
         receipt = self.transport.request(
             "POST",
             f"{base.rstrip('/')}/tools/execute",
-            headers={"Authorization": f"Bearer {key}", "Arcade-User-ID": external_user_id},
+            headers={"Authorization": f"Bearer {key}"},
             body={
                 "tool_name": tool,
                 "input": arguments,
-                **(
-                    {"connected_account_id": connected_account_id}
-                    if connected_account_id
-                    else {}
-                ),
+                "user_id": external_user_id,
             },
         )
         return ToolResult(self.provider, tool, "succeeded", receipt)

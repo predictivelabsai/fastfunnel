@@ -1287,11 +1287,17 @@ def integration_detail_view(sess, integration_id: str, saved: str = ""):
                             ),
                         ),
                         Label(
-                            "Connected account reference",
+                            (
+                                "Connected account reference"
+                                if integration_id == "composio"
+                                else "Authorization reference (optional)"
+                            ),
                             Input(
                                 name="connected_account_id",
-                                placeholder="Returned by hosted provider authorization",
-                                required=True,
+                                placeholder=(
+                                    "Returned by hosted provider authorization"
+                                ),
+                                required=integration_id == "composio",
                             ),
                         ),
                         Button("Save delegated account", type="submit"),
@@ -1386,7 +1392,7 @@ def save_provider_identity(
     sess,
     integration_id: str,
     external_user_id: str,
-    connected_account_id: str,
+    connected_account_id: str = "",
 ):
     if integration_id not in {"composio", "arcade"}:
         return Response("Unsupported delegated provider", status_code=422)
@@ -1414,7 +1420,7 @@ def save_provider_identity(
                 user["id"],
                 integration_id,
                 external_user_id.strip(),
-                connected_account_id.strip(),
+                connected_account_id.strip() or None,
                 timestamp,
                 timestamp,
             ),

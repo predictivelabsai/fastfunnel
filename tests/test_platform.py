@@ -179,15 +179,32 @@ def test_action_execution_is_payload_bound_idempotent_and_audited(
 def test_composio_and_arcade_provider_contracts(monkeypatch):
     monkeypatch.setenv("COMPOSIO_API_KEY", "composio-test")
     composio_transport = FakeTransport(
-        [{"id": "session-1"}, {"data": {"id": "post-1"}}]
+        [{"session_id": "session-1"}, {"data": {"id": "post-1"}}]
     )
     result = ComposioProvider(composio_transport).execute(
         external_user_id="tenant-user",
         tool="LINKEDIN_CREATE_POST",
         arguments={"text": "Hello"},
+        connected_account_id="account-1",
     )
     assert result.status == "succeeded"
     assert len(composio_transport.calls) == 2
+    assert composio_transport.calls[0]["url"].endswith(
+        "/api/v3/tool_router/session"
+    )
+    assert composio_transport.calls[0]["body"] == {
+        "user_id": "tenant-user",
+        "toolkits": {"enabled": ["linkedin"]},
+        "manage_connections": {"enable": True},
+        "connected_accounts": {"linkedin": "account-1"},
+    }
+    assert composio_transport.calls[1]["url"].endswith(
+        "/api/v3/tool_router/session/session-1/execute"
+    )
+    assert composio_transport.calls[1]["body"] == {
+        "tool_slug": "LINKEDIN_CREATE_POST",
+        "arguments": {"text": "Hello"},
+    }
 
     monkeypatch.setenv("ARCADE_API_KEY", "arcade-test")
     arcade_transport = FakeTransport([{"id": "post-2"}])
@@ -196,7 +213,14 @@ def test_composio_and_arcade_provider_contracts(monkeypatch):
         tool="LinkedIn.CreatePost",
         arguments={"text": "Hello"},
     )
-    assert arcade_transport.calls[0]["headers"]["Arcade-User-ID"] == "tenant-user"
+    assert arcade_transport.calls[0]["headers"] == {
+        "Authorization": "Bearer arcade-test"
+    }
+    assert arcade_transport.calls[0]["body"] == {
+        "tool_name": "LinkedIn.CreatePost",
+        "input": {"text": "Hello"},
+        "user_id": "tenant-user",
+    }
 
 
 def test_provider_keys_validate_with_read_only_calls():
