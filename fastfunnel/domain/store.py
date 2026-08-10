@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
 import re
 import secrets
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from fastfunnel.config import settings
 from fastfunnel.domain.schema import DDL, SCHEMA_VERSION
@@ -65,6 +67,50 @@ CREATE TABLE IF NOT EXISTS audit_events (
     created_at TEXT NOT NULL
 );
 """
+
+_postgres_pools: dict[str, ConnectionPool] = {}
+_postgres_pool_lock = threading.Lock()
+
+
+def _postgres_pool(database_url: str) -> ConnectionPool:
+    """Return one bounded PostgreSQL pool per URL for this process."""
+    pool = _postgres_pools.get(database_url)
+    if pool is not None:
+        return pool
+    with _postgres_pool_lock:
+        pool = _postgres_pools.get(database_url)
+        if pool is None:
+            pool = ConnectionPool(
+                conninfo=database_url,
+                min_size=int(os.getenv("DB_POOL_MIN_SIZE", "0")),
+                max_size=int(os.getenv("DB_POOL_MAX_SIZE", "3")),
+                timeout=float(os.getenv("DB_POOL_TIMEOUT", "10")),
+                max_lifetime=float(os.getenv("DB_POOL_RECYCLE", "1800")),
+                max_idle=float(os.getenv("DB_POOL_MAX_IDLE", "300")),
+                kwargs={
+                    "row_factory": dict_row,
+                    "application_name": os.getenv(
+                        "DB_APPLICATION_NAME", "fastfunnel"
+                    ),
+                },
+                check=ConnectionPool.check_connection,
+                open=False,
+            )
+            pool.open()
+            _postgres_pools[database_url] = pool
+    return pool
+
+
+def close_postgres_pools() -> None:
+    """Close every process pool during shutdown or test reset."""
+    with _postgres_pool_lock:
+        pools = list(_postgres_pools.values())
+        _postgres_pools.clear()
+    for pool in pools:
+        pool.close()
+
+
+atexit.register(close_postgres_pools)
 
 
 def now_iso() -> str:
@@ -162,16 +208,14 @@ class Store:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection | PostgresCompatConnection]:
         if self.database_url:
-            raw = psycopg.connect(self.database_url, row_factory=dict_row)
-            connection = PostgresCompatConnection(raw)
-            try:
-                yield connection
-                raw.commit()
-            except Exception:
-                raw.rollback()
-                raise
-            finally:
-                raw.close()
+            with _postgres_pool(self.database_url).connection() as raw:
+                connection = PostgresCompatConnection(raw)
+                try:
+                    yield connection
+                    raw.commit()
+                except Exception:
+                    raw.rollback()
+                    raise
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=30)
